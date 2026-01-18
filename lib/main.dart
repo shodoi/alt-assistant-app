@@ -408,11 +408,28 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
             ] else
-              Container(
-                height: 200,
-                width: double.infinity,
-                color: Colors.grey[200],
-                child: const Center(child: Text('No image selected')),
+              InkWell(
+                onTap: _pickImage,
+                child: Container(
+                  height: 200,
+                  width: double.infinity,
+                  color: Colors.grey[200],
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      Icon(Icons.add_a_photo, size: 50, color: Colors.grey),
+                      SizedBox(height: 8),
+                      Text(
+                        'タップして画像を選択',
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             Expanded(
               child: ListView.builder(
