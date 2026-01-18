@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,9 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
+import 'history_database.dart';
+import 'history_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,6 +31,7 @@ class AltTextGeneratorApp extends StatelessWidget {
       routes: {
         '/': (context) => const HomePage(),
         '/settings': (context) => const SettingsPage(),
+        '/history': (context) => const HistoryPage(),
       },
     );
   }
@@ -245,11 +250,15 @@ class _HomePageState extends State<HomePage> {
         );
 
         if (mounted) {
+          final generatedText = response.text ?? 'No response';
           setState(() {
-            _messages.add(ChatMessage(role: 'model', text: response.text ?? 'No response'));
+            _messages.add(ChatMessage(role: 'model', text: generatedText));
             _isLoading = false;
             _statusMessage = '';
           });
+          if (response.text != null) {
+            _saveToHistory(generatedText);
+          }
         }
         return;
       } catch (e) {
@@ -367,6 +376,79 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  Future<void> _restoreFromHistory(HistoryItem item) async {
+    final key = await _storage.read(key: _apiKeyKey);
+    if (key == null) return;
+
+    setState(() {
+      _isLoading = true;
+      _statusMessage = 'チャットを復元中...';
+    });
+
+    try {
+      final messages = (jsonDecode(item.messagesJson ?? '[]') as List)
+          .map((m) => ChatMessage.fromJson(m))
+          .toList();
+
+      setState(() {
+        _imageBytes = item.fullImage;
+        _messages = messages;
+        _isLoading = false;
+        _statusMessage = '';
+      });
+
+      // Re-initialize model and chat session with history
+      _initModel(key);
+      final history = messages
+          .map((m) => Content(m.role, [TextPart(m.text)]))
+          .toList();
+      
+      // Remove the last message if it's from the model, because startChat will use it
+      // Actually, startChat(history: ...) expects the full history.
+      _chatSession = _model!.startChat(history: history);
+    } catch (e) {
+      debugPrint('Error restoring history: $e');
+      setState(() {
+        _isLoading = false;
+        _statusMessage = '';
+      });
+    }
+  }
+
+  Future<void> _saveToHistory(String text) async {
+    if (_imageBytes == null) return;
+
+    try {
+      final originalImage = img.decodeImage(_imageBytes!);
+      if (originalImage == null) return;
+
+      // サムネイル作成 (100x100程度)
+      final thumbnailImage = img.copyResize(originalImage, width: 100);
+      final thumbnailBytes = Uint8List.fromList(img.encodePng(thumbnailImage));
+
+      // 解析用のフル画像を少し圧縮して保存 (max 1024px)
+      img.Image optimizedImage = originalImage;
+      if (originalImage.width > 1024 || originalImage.height > 1024) {
+        optimizedImage = img.copyResize(originalImage,
+            width: originalImage.width > originalImage.height ? 1024 : null,
+            height: originalImage.height >= originalImage.width ? 1024 : null);
+      }
+      final fullImageBytes = Uint8List.fromList(img.encodeJpg(optimizedImage, quality: 80));
+
+      final item = HistoryItem(
+        altText: text,
+        thumbnail: thumbnailBytes,
+        fullImage: fullImageBytes,
+        messagesJson: jsonEncode(_messages.map((m) => m.toJson()).toList()),
+        createdAt: DateTime.now(),
+      );
+
+      await HistoryDatabase.instance.insert(item);
+    } catch (e) {
+      debugPrint('Error saving history: $e');
+    }
+  }
+
   void _resetState() {
     setState(() {
       _imageBytes = null;
@@ -404,9 +486,20 @@ class _HomePageState extends State<HomePage> {
               tooltip: 'リセット',
             ),
           IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () async {
+              final result = await Navigator.pushNamed(context, '/history');
+              if (result is HistoryItem && mounted) {
+                _restoreFromHistory(result);
+              }
+            },
+            tooltip: '履歴',
+          ),
+          IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () => Navigator.pushNamed(context, '/settings')
                 .then((_) => _checkApiKey()),
+            tooltip: '設定',
           ),
         ],
       ),
@@ -550,4 +643,14 @@ class ChatMessage {
   final String text;
 
   ChatMessage({required this.role, required this.text});
+
+  Map<String, dynamic> toJson() => {
+        'role': role,
+        'text': text,
+      };
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
+        role: json['role'] as String,
+        text: json['text'] as String,
+      );
 }
