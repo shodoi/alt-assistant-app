@@ -12,6 +12,12 @@ Gemini AIを活用して、画像の代替テキスト（Alt Text）を瞬時に
 | :---: | :---: |
 | ![初期画面](docs/images/alt-assistant01.webp) | ![生成結果画面](docs/images/alt-assistant02.webp) |
 
+## ダウンロード (Android)
+
+Android版は以下のReleasesページから最新のAPKファイルをダウンロードしてインストールできます。
+
+[最新のAPKをダウンロード](https://github.com/shodoi/alt-assistant-app/releases)
+
 ## 主要機能
 
 - **AIによる代替テキスト生成**: Googleの最新AI（Gemini）が画像を解析し、自然な日本語で説明文を作成します。
