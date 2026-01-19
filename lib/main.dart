@@ -52,20 +52,23 @@ class _SettingsPageState extends State<SettingsPage> {
   );
   final _apiKeyController = TextEditingController();
   static const _apiKeyKey = 'gemini_api_key';
+  static const _useProPriorityKey = 'use_pro_priority';
   bool _isLoading = true;
+  bool _useProPriority = false;
 
   @override
   void initState() {
     super.initState();
-    _loadApiKey();
+    _loadSettings();
   }
 
-  Future<void> _loadApiKey() async {
+  Future<void> _loadSettings() async {
     final key = await _storage.read(key: _apiKeyKey);
-    if (key != null) {
-      _apiKeyController.text = key;
-    }
+    final proPriority = await _storage.read(key: _useProPriorityKey);
+    
     setState(() {
+      if (key != null) _apiKeyController.text = key;
+      _useProPriority = proPriority == 'true';
       _isLoading = false;
     });
   }
@@ -111,6 +114,22 @@ class _SettingsPageState extends State<SettingsPage> {
                       onPressed: _saveApiKey,
                       child: const Text('Save API Key'),
                     ),
+                    const SizedBox(height: 24),
+                    const Divider(),
+                    SwitchListTile(
+                      title: const Text('Pro モデルを優先する'),
+                      subtitle: const Text('課金ユーザー向け。gemini-3-pro-preview を最優先で試行します。'),
+                      value: _useProPriority,
+                      onChanged: (value) async {
+                        setState(() {
+                          _useProPriority = value;
+                        });
+                        await _storage.write(
+                          key: _useProPriorityKey,
+                          value: value.toString(),
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -144,10 +163,11 @@ class _HomePageState extends State<HomePage> {
   String _statusMessage = '';
 
   static const _apiKeyKey = 'gemini_api_key';
-  static const List<String> _modelHierarchy = [
+  static const _useProPriorityKey = 'use_pro_priority';
+  List<String> _modelHierarchy = [
     'gemini-3-flash-preview',
     'gemini-2.5-flash',
-    'gemini-1.5-flash',
+    'gemini-2.0-flash',
   ];
   int _currentModelIndex = 0;
   int? _currentHistoryId;
@@ -160,6 +180,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _checkApiKey() async {
     final key = await _storage.read(key: _apiKeyKey);
+    final proPriority = await _storage.read(key: _useProPriorityKey);
+
     if (key == null) {
       if (mounted) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -167,6 +189,19 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } else {
+      // モデル階層の動的構築
+      List<String> hierarchy = [
+        'gemini-3-flash-preview',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+      ];
+      if (proPriority == 'true') {
+        hierarchy.insert(0, 'gemini-3-pro-preview');
+      }
+      
+      setState(() {
+        _modelHierarchy = hierarchy;
+      });
       _initModel(key);
     }
   }
