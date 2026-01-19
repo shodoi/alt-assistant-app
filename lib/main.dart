@@ -335,8 +335,9 @@ class _HomePageState extends State<HomePage> {
             _statusMessage = '';
           });
           _scrollToBottom();
-          // チャットの続きも履歴に保存
-          _saveToHistory(_messages.first.text);
+          // チャットの続きも履歴に保存（タイトルは最初の生成結果を維持）
+          final historyTitle = _messages.firstWhere((m) => m.role == 'model', orElse: () => _messages.first).text;
+          _saveToHistory(historyTitle);
         }
         return;
       } catch (e) {
@@ -353,7 +354,6 @@ class _HomePageState extends State<HomePage> {
           }
           return;
         }
-
         if (i == _modelHierarchy.length - 1) {
           if (mounted) {
             setState(() {
@@ -362,8 +362,41 @@ class _HomePageState extends State<HomePage> {
               _statusMessage = '';
             });
           }
+        } else {
+          setState(() {
+            _statusMessage = '$modelName が失敗しました。次のモデルを試します...';
+          });
         }
       }
+    }
+  }
+
+  void _regenerateLatestResponse() {
+    if (_messages.isEmpty) return;
+
+    // 最新のユーザーメッセージを探す
+    int lastUserIndex = -1;
+    for (int i = _messages.length - 1; i >= 0; i--) {
+      if (_messages[i].role == 'user') {
+        lastUserIndex = i;
+        break;
+      }
+    }
+
+    if (lastUserIndex == -1) return;
+
+    final lastUserMsg = _messages[lastUserIndex];
+
+    // そのユーザーメッセージ以降をすべて削除
+    setState(() {
+      _messages.removeRange(lastUserIndex, _messages.length);
+    });
+
+    if (lastUserMsg.text == '画像の代替テキストを生成中...') {
+      _generateAltText();
+    } else {
+      _textController.text = lastUserMsg.text;
+      _sendMessage();
     }
   }
 
@@ -586,7 +619,24 @@ class _HomePageState extends State<HomePage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          MarkdownBody(data: msg.text),
+                          if (isUser)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Flexible(child: MarkdownBody(data: msg.text)),
+                                if (index == _messages.lastIndexWhere((m) => m.role == 'user') && !_isLoading)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 8.0),
+                                    child: InkWell(
+                                      onTap: _regenerateLatestResponse,
+                                      child: const Icon(Icons.refresh, size: 18, color: Colors.blue),
+                                    ),
+                                  ),
+                              ],
+                            )
+                          else
+                            MarkdownBody(data: msg.text),
                           if (!isUser) ...[
                             const SizedBox(height: 8),
                             InkWell(
