@@ -239,7 +239,7 @@ class _HomePageState extends State<HomePage> {
 
         final content = [
           Content.multi([
-            TextPart('この画像の簡潔な代替テキスト（alt text）を日本語で生成してください。'),
+            TextPart('この画像の簡潔な代替テキスト（alt text）を、装飾（**等）のないプレーンな日本語で生成してください。'),
             DataPart('image/jpeg', _imageBytes!),
           ])
         ];
@@ -251,7 +251,7 @@ class _HomePageState extends State<HomePage> {
         );
 
         if (mounted) {
-          final generatedText = response.text ?? 'No response';
+          final generatedText = _cleanAiText(response.text ?? 'No response');
           setState(() {
             _messages.add(ChatMessage(role: 'model', text: generatedText));
             _isLoading = false;
@@ -330,7 +330,7 @@ class _HomePageState extends State<HomePage> {
             );
         if (mounted) {
           setState(() {
-            _messages.add(ChatMessage(role: 'model', text: response.text ?? 'No response'));
+            _messages.add(ChatMessage(role: 'model', text: _cleanAiText(response.text ?? 'No response')));
             _isLoading = false;
             _statusMessage = '';
           });
@@ -459,6 +459,11 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       debugPrint('Error saving history: $e');
     }
+  }
+
+  String _cleanAiText(String text) {
+    // 太字などのマークダウン装飾記号を除去
+    return text.replaceAll('**', '');
   }
 
   void _resetState() {
