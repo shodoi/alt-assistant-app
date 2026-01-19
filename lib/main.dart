@@ -239,7 +239,7 @@ class _HomePageState extends State<HomePage> {
 
         final content = [
           Content.multi([
-            TextPart('この画像の簡潔な代替テキスト（alt text）を、装飾（**等）のないプレーンな日本語で生成してください。'),
+            TextPart('この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。'),
             DataPart('image/jpeg', _imageBytes!),
           ])
         ];
@@ -571,7 +571,7 @@ class _HomePageState extends State<HomePage> {
                   child: ElevatedButton.icon(
                     onPressed: _isLoading ? null : _generateAltText,
                     icon: const Icon(Icons.auto_awesome),
-                    label: const Text('altテキストを生成'),
+                    label: const Text('Altテキストを生成'),
                   ),
                 ),
             ] else
