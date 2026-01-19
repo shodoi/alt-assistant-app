@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'history_database.dart';
 
 class HistoryPage extends StatefulWidget {
@@ -25,13 +24,6 @@ class _HistoryPageState extends State<HistoryPage> {
       _history = history;
       _isLoading = false;
     });
-  }
-
-  void _copyToClipboard(String text) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Copied to clipboard')),
-    );
   }
 
   Future<void> _deleteItem(int id) async {
@@ -78,38 +70,7 @@ class _HistoryPageState extends State<HistoryPage> {
                           onPressed: () => _deleteItem(item.id!),
                         ),
                         onTap: () {
-                          showDialog(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: const Text('生成されたテキスト'),
-                              content: SingleChildScrollView(
-                                child: Text(item.altText),
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(context),
-                                  child: const Text('閉じる'),
-                                ),
-                                ElevatedButton.icon(
-                                  onPressed: () {
-                                    // Close dialog and return item to home
-                                    Navigator.pop(context);
-                                    Navigator.pop(context, item);
-                                  },
-                                  icon: const Icon(Icons.chat_bubble),
-                                  label: const Text('チャットを再開'),
-                                ),
-                                ElevatedButton.icon(
-                                  onPressed: () {
-                                    _copyToClipboard(item.altText);
-                                    Navigator.pop(context);
-                                  },
-                                  icon: const Icon(Icons.copy),
-                                  label: const Text('コピー'),
-                                ),
-                              ],
-                            ),
-                          );
+                          Navigator.pop(context, item);
                         },
                       ),
                     );

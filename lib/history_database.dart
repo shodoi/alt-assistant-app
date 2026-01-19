@@ -124,6 +124,16 @@ class HistoryDatabase {
     }
   }
 
+  Future<int> update(HistoryItem item) async {
+    final db = await instance.database;
+    return await db.update(
+      'history',
+      item.toMap(),
+      where: 'id = ?',
+      whereArgs: [item.id],
+    );
+  }
+
   Future<void> delete(int id) async {
     final db = await instance.database;
     await db.delete(

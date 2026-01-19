@@ -150,6 +150,7 @@ class _HomePageState extends State<HomePage> {
     'gemini-1.5-flash',
   ];
   int _currentModelIndex = 0;
+  int? _currentHistoryId;
 
   @override
   void initState() {
@@ -334,6 +335,8 @@ class _HomePageState extends State<HomePage> {
             _statusMessage = '';
           });
           _scrollToBottom();
+          // チャットの続きも履歴に保存
+          _saveToHistory(_messages.first.text);
         }
         return;
       } catch (e) {
@@ -395,6 +398,7 @@ class _HomePageState extends State<HomePage> {
         _messages = messages;
         _isLoading = false;
         _statusMessage = '';
+        _currentHistoryId = item.id; // セッションIDをセット
       });
 
       // Re-initialize model and chat session with history
@@ -436,6 +440,7 @@ class _HomePageState extends State<HomePage> {
       final fullImageBytes = Uint8List.fromList(img.encodeJpg(optimizedImage, quality: 80));
 
       final item = HistoryItem(
+        id: _currentHistoryId, // 指定があれば更新になる
         altText: text,
         thumbnail: thumbnailBytes,
         fullImage: fullImageBytes,
@@ -443,7 +448,14 @@ class _HomePageState extends State<HomePage> {
         createdAt: DateTime.now(),
       );
 
-      await HistoryDatabase.instance.insert(item);
+      if (_currentHistoryId == null) {
+        final id = await HistoryDatabase.instance.insert(item);
+        setState(() {
+          _currentHistoryId = id;
+        });
+      } else {
+        await HistoryDatabase.instance.update(item);
+      }
     } catch (e) {
       debugPrint('Error saving history: $e');
     }
@@ -456,6 +468,8 @@ class _HomePageState extends State<HomePage> {
       _chatSession = null;
       _textController.clear();
       _isLoading = false;
+      _statusMessage = '';
+      _currentHistoryId = null; // IDをリセット
     });
   }
 
