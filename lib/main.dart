@@ -11,6 +11,8 @@ import 'package:image/image.dart' as img;
 import 'history_database.dart';
 import 'history_page.dart';
 
+const String kDefaultInitialPrompt = 'この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const AltTextGeneratorApp());
@@ -51,8 +53,10 @@ class _SettingsPageState extends State<SettingsPage> {
     iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
   );
   final _apiKeyController = TextEditingController();
+  final _promptController = TextEditingController(); // 追加
   static const _apiKeyKey = 'gemini_api_key';
   static const _useProPriorityKey = 'use_pro_priority';
+  static const _customPromptKey = 'custom_initial_prompt'; // 追加
   bool _isLoading = true;
   bool _useProPriority = false;
 
@@ -65,9 +69,13 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _loadSettings() async {
     final key = await _storage.read(key: _apiKeyKey);
     final proPriority = await _storage.read(key: _useProPriorityKey);
+    final customPrompt = await _storage.read(key: _customPromptKey);
     
     setState(() {
       if (key != null) _apiKeyController.text = key;
+      if (customPrompt != null) {
+        _promptController.text = customPrompt;
+      }
       _useProPriority = proPriority == 'true';
       _isLoading = false;
     });
@@ -85,6 +93,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _apiKeyController.dispose();
+    _promptController.dispose(); // 追加
     super.dispose();
   }
 
@@ -95,42 +104,106 @@ class _SettingsPageState extends State<SettingsPage> {
       body: SafeArea(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
-            : Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: _apiKeyController,
-                      decoration: const InputDecoration(
-                        labelText: 'Gemini API Key',
-                        border: OutlineInputBorder(),
-                        helperText: 'Enter your Gemini API key here.',
+            : SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: _apiKeyController,
+                        decoration: const InputDecoration(
+                          labelText: 'Gemini API Key',
+                          border: OutlineInputBorder(),
+                          helperText: 'Enter your Gemini API key here.',
+                        ),
+                        obscureText: true,
                       ),
-                      obscureText: true,
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: _saveApiKey,
-                      child: const Text('Save API Key'),
-                    ),
-                    const SizedBox(height: 24),
-                    const Divider(),
-                    SwitchListTile(
-                      title: const Text('Pro モデルを優先する'),
-                      subtitle: const Text('課金ユーザー向け。gemini-3-pro-preview を最優先で試行します。'),
-                      value: _useProPriority,
-                      onChanged: (value) async {
-                        setState(() {
-                          _useProPriority = value;
-                        });
-                        await _storage.write(
-                          key: _useProPriorityKey,
-                          value: value.toString(),
-                        );
-                      },
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: _saveApiKey,
+                        child: const Text('Save API Key'),
+                      ),
+                      const SizedBox(height: 24),
+                      const Divider(),
+                      SwitchListTile(
+                        title: const Text('Pro モデルを優先する'),
+                        subtitle:
+                            const Text('課金ユーザー向け。gemini-3-pro-preview を最優先で試行します。'),
+                        value: _useProPriority,
+                        onChanged: (value) async {
+                          setState(() {
+                            _useProPriority = value;
+                          });
+                          await _storage.write(
+                            key: _useProPriorityKey,
+                            value: value.toString(),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 24),
+                      const Divider(),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'カスタム初期プロンプト',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '標準設定: $kDefaultInitialPrompt',
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _promptController,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                          hintText: 'ここにカスタムプロンプトを入力...',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: () async {
+                                await _storage.write(
+                                    key: _customPromptKey,
+                                    value: _promptController.text.trim());
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content:
+                                            Text('Prompt saved successfully')),
+                                  );
+                                }
+                              },
+                              child: const Text('プロンプトを保存'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            onPressed: () async {
+                              await _storage.delete(key: _customPromptKey);
+                              setState(() {
+                                _promptController.clear();
+                              });
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('Reset to default prompt')),
+                                );
+                              }
+                            },
+                            child: const Text('リセット'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
       ),
@@ -171,6 +244,9 @@ class _HomePageState extends State<HomePage> {
   ];
   int _currentModelIndex = 0;
   int? _currentHistoryId;
+  String? _customPrompt; // 追加
+
+  bool get _isCustomPromptActive => _customPrompt != null && _customPrompt!.isNotEmpty;
 
   @override
   void initState() {
@@ -181,6 +257,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _checkApiKey() async {
     final key = await _storage.read(key: _apiKeyKey);
     final proPriority = await _storage.read(key: _useProPriorityKey);
+    final customPrompt = await _storage.read(key: 'custom_initial_prompt');
 
     if (key == null) {
       if (mounted) {
@@ -189,7 +266,7 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } else {
-      // モデル階層の動的構築
+      // モデル階層とカスタムプロンプトの動的構築
       List<String> hierarchy = [
         'gemini-3-flash-preview',
         'gemini-2.5-flash',
@@ -201,6 +278,7 @@ class _HomePageState extends State<HomePage> {
       
       setState(() {
         _modelHierarchy = hierarchy;
+        _customPrompt = customPrompt; // ステートを更新
       });
       _initModel(key);
     }
@@ -257,10 +335,17 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
+    final customPrompt = await _storage.read(key: 'custom_initial_prompt');
+    final prompt = (customPrompt != null && customPrompt.isNotEmpty)
+        ? customPrompt
+        : kDefaultInitialPrompt;
+
+    final userMessage = _isCustomPromptActive ? 'カスタム指示を実行中...' : '画像の代替テキストを生成中...';
+
     setState(() {
       _isLoading = true;
       _statusMessage = 'モデルを選択中...';
-      _messages.add(ChatMessage(role: 'user', text: '画像の代替テキストを生成中...'));
+      _messages.add(ChatMessage(role: 'user', text: userMessage));
     });
 
     for (int i = 0; i < _modelHierarchy.length; i++) {
@@ -274,7 +359,7 @@ class _HomePageState extends State<HomePage> {
 
         final content = [
           Content.multi([
-            TextPart('この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。'),
+            TextPart(prompt),
             DataPart('image/jpeg', _imageBytes!),
           ])
         ];
@@ -427,7 +512,7 @@ class _HomePageState extends State<HomePage> {
       _messages.removeRange(lastUserIndex, _messages.length);
     });
 
-    if (lastUserMsg.text == '画像の代替テキストを生成中...') {
+    if (lastUserMsg.text == '画像の代替テキストを生成中...' || lastUserMsg.text == 'カスタム指示を実行中...') {
       _generateAltText();
     } else {
       _textController.text = lastUserMsg.text;
@@ -584,8 +669,10 @@ class _HomePageState extends State<HomePage> {
           ),
           IconButton(
             icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.pushNamed(context, '/settings')
-                .then((_) => _checkApiKey()),
+            onPressed: () async {
+              await Navigator.pushNamed(context, '/settings');
+              _checkApiKey();
+            },
             tooltip: '設定',
           ),
         ],
@@ -606,7 +693,7 @@ class _HomePageState extends State<HomePage> {
                   child: ElevatedButton.icon(
                     onPressed: _isLoading ? null : _generateAltText,
                     icon: const Icon(Icons.auto_awesome),
-                    label: const Text('Altテキストを生成'),
+                    label: Text(_isCustomPromptActive ? '指示を実行' : 'Altテキストを生成'),
                   ),
                 ),
             ] else
