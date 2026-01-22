@@ -12,12 +12,55 @@ import 'package:image/image.dart' as img;
 import 'config.dart';
 import 'history_database.dart';
 import 'history_page.dart';
+import 'dart:io' show Platform;
+import 'package:file_selector/file_selector.dart';
+import 'package:camera/camera.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'camera_screen.dart';
 
 
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const AltTextGeneratorApp());
+}
+
+class SecureStorageHelper {
+  static const _storage = FlutterSecureStorage(
+    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+  );
+
+  static Future<String?> read({required String key}) async {
+    if (Platform.isMacOS) {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString(key);
+    } else {
+      return await _storage.read(key: key);
+    }
+  }
+
+  static Future<void> write({required String key, required String? value}) async {
+    if (value == null) {
+      await delete(key: key);
+      return;
+    }
+    
+    if (Platform.isMacOS) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(key, value);
+    } else {
+      await _storage.write(key: key, value: value);
+    }
+  }
+  
+  static Future<void> delete({required String key}) async {
+    if (Platform.isMacOS) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(key);
+    } else {
+      await _storage.delete(key: key);
+    }
+  }
 }
 
 class AltTextGeneratorApp extends StatelessWidget {
@@ -51,17 +94,14 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  final _storage = const FlutterSecureStorage(
-    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
-  );
   final _apiKeyController = TextEditingController();
-  final _promptController = TextEditingController(); // 追加
+  final _promptController = TextEditingController();
   static const _apiKeyKey = 'gemini_api_key';
   static const _useProPriorityKey = 'use_pro_priority';
-  static const _customPromptKey = 'custom_initial_prompt'; // 追加
+  static const _customPromptKey = 'custom_initial_prompt';
   bool _isLoading = true;
   bool _useProPriority = false;
-  bool _isVerifying = false; // 検証中ステータス
+  bool _isVerifying = false;
 
   @override
   void initState() {
@@ -70,18 +110,21 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _loadSettings() async {
-    final key = await _storage.read(key: _apiKeyKey);
-    final proPriority = await _storage.read(key: _useProPriorityKey);
-    final customPrompt = await _storage.read(key: _customPromptKey);
+    setState(() => _isLoading = true); // ローディング状態
+    final key = await SecureStorageHelper.read(key: _apiKeyKey);
+    final proPriority = await SecureStorageHelper.read(key: _useProPriorityKey);
+    final customPrompt = await SecureStorageHelper.read(key: _customPromptKey);
     
-    setState(() {
-      if (key != null) _apiKeyController.text = key;
-      if (customPrompt != null) {
-        _promptController.text = customPrompt;
-      }
-      _useProPriority = proPriority == 'true';
-      _isLoading = false;
-    });
+    if (mounted) {
+      setState(() {
+        if (key != null) _apiKeyController.text = key;
+        if (customPrompt != null) {
+          _promptController.text = customPrompt;
+        }
+        _useProPriority = proPriority == 'true';
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _saveApiKey() async {
@@ -100,14 +143,17 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       // APIキーの有効性検証
       final model = GenerativeModel(
-        model: 'gemini-3-flash-preview', // 軽量なモデルでテスト
+        model: 'gemini-3-flash-preview', 
         apiKey: newKey,
       );
-      // テストリクエスト送信
+      // テストリクエスト
       await model.generateContent([Content.text('test')]);
 
       // 保存
-      await _storage.write(key: _apiKeyKey, value: newKey);
+      await SecureStorageHelper.write(key: _apiKeyKey, value: newKey);
+      await SecureStorageHelper.write(key: _useProPriorityKey, value: _useProPriority.toString());
+      await SecureStorageHelper.write(key: _customPromptKey, value: _promptController.text);
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -115,6 +161,7 @@ class _SettingsPageState extends State<SettingsPage> {
             backgroundColor: Colors.green,
           ),
         );
+        Navigator.pop(context); // 成功したら戻る
       }
     } catch (e) {
       if (mounted) {
@@ -137,7 +184,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _apiKeyController.dispose();
-    _promptController.dispose(); // 追加
+    _promptController.dispose();
     super.dispose();
   }
 
@@ -185,7 +232,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           setState(() {
                             _useProPriority = value;
                           });
-                          await _storage.write(
+                          await SecureStorageHelper.write(
                             key: _useProPriorityKey,
                             value: value.toString(),
                           );
@@ -229,7 +276,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   return;
                                 }
                                 
-                                await _storage.write(
+                                await SecureStorageHelper.write(
                                     key: _customPromptKey,
                                     value: text);
                                 if (mounted) {
@@ -246,7 +293,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           const SizedBox(width: 8),
                           TextButton(
                             onPressed: () async {
-                              await _storage.delete(key: _customPromptKey);
+                              await SecureStorageHelper.delete(key: _customPromptKey);
                               setState(() {
                                 _promptController.clear();
                               });
@@ -281,9 +328,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _picker = ImagePicker();
-  final _storage = const FlutterSecureStorage(
-    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
-  );
   final _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
@@ -314,9 +358,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _checkApiKey() async {
-    final key = await _storage.read(key: _apiKeyKey);
-    final proPriority = await _storage.read(key: _useProPriorityKey);
-    final customPrompt = await _storage.read(key: 'custom_initial_prompt');
+    final key = await SecureStorageHelper.read(key: _apiKeyKey);
+    final proPriority = await SecureStorageHelper.read(key: _useProPriorityKey);
+    final customPrompt = await SecureStorageHelper.read(key: 'custom_initial_prompt');
 
     if (key == null) {
       if (mounted) {
@@ -351,6 +395,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _pickImage() async {
+    if (Platform.isMacOS) {
+      await _pickImageMacOS();
+    } else {
+      await _pickImageMobile();
+    }
+  }
+
+  Future<void> _pickImageMobile() async {
     final ImageSource? source = await showModalBottomSheet<ImageSource>(
       context: context,
       builder: (context) => SafeArea(
@@ -385,16 +437,95 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _pickImageMacOS() async {
+    final source = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('画像を選択'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('ファイルから選択'),
+              onTap: () => Navigator.pop(context, 'file'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('カメラで撮影'),
+              onTap: () => Navigator.pop(context, 'camera'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (source == 'file') {
+      const XTypeGroup typeGroup = XTypeGroup(
+        label: 'images',
+        extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'],
+      );
+      final XFile? file = await openFile(acceptedTypeGroups: [typeGroup]);
+      if (file != null) {
+        final bytes = await file.readAsBytes();
+        setState(() {
+          _imageBytes = bytes;
+          _messages = [];
+          _chatSession = null;
+        });
+      }
+    } else if (source == 'camera') {
+      await _takePictureWithCamera();
+    }
+  }
+
+  Future<void> _takePictureWithCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('カメラが見つかりません')),
+          );
+        }
+        return;
+      }
+
+      final result = await Navigator.push<XFile>(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CameraScreen(camera: cameras.first),
+        ),
+      );
+
+      if (result != null) {
+        final bytes = await result.readAsBytes();
+        setState(() {
+          _imageBytes = bytes;
+          _messages = [];
+          _chatSession = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error accessing camera: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('カメラへのアクセスに失敗しました')),
+        );
+      }
+    }
+  }
+
   Future<void> _generateAltText() async {
     if (_imageBytes == null) return;
 
-    final key = await _storage.read(key: _apiKeyKey);
+    final key = await SecureStorageHelper.read(key: _apiKeyKey);
     if (key == null) {
       if (mounted) Navigator.pushNamed(context, '/settings');
       return;
     }
 
-    final customPrompt = await _storage.read(key: 'custom_initial_prompt');
+    final customPrompt = await SecureStorageHelper.read(key: 'custom_initial_prompt');
     final prompt = (customPrompt != null && customPrompt.isNotEmpty)
         ? customPrompt
         : AppConfig.initialPromptDefault;
@@ -471,7 +602,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _sendMessage() async {
     if (_textController.text.isEmpty || _chatSession == null) return;
 
-    final key = await _storage.read(key: _apiKeyKey);
+    final key = await SecureStorageHelper.read(key: _apiKeyKey);
     if (key == null) return;
 
     final userMessage = _textController.text;
@@ -582,7 +713,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _restoreFromHistory(HistoryItem item) async {
-    final key = await _storage.read(key: _apiKeyKey);
+    final key = await SecureStorageHelper.read(key: _apiKeyKey);
     if (key == null) return;
 
     setState(() {
