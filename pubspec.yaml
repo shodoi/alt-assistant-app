@@ -19,6 +19,8 @@ dependencies:
   image: ^4.2.0
   file_selector: ^1.0.3
   camera: ^0.11.0+2
+  camera_macos:
+  path_provider: ^2.1.2
   shared_preferences: ^2.2.2
 
 dev_dependencies:

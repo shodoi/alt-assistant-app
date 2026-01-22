@@ -481,20 +481,25 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _takePictureWithCamera() async {
     try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('カメラが見つかりません')),
-          );
+      CameraDescription? camera;
+      
+      if (!Platform.isMacOS) {
+        final cameras = await availableCameras();
+        if (cameras.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('カメラが見つかりません')),
+            );
+          }
+          return;
         }
-        return;
+        camera = cameras.first;
       }
 
       final result = await Navigator.push<XFile>(
         context,
         MaterialPageRoute(
-          builder: (context) => CameraScreen(camera: cameras.first),
+          builder: (context) => CameraScreen(camera: camera),
         ),
       );
 
