@@ -8,10 +8,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
+
+import 'config.dart';
 import 'history_database.dart';
 import 'history_page.dart';
 
-const String kDefaultInitialPrompt = 'この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。';
+
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,6 +61,7 @@ class _SettingsPageState extends State<SettingsPage> {
   static const _customPromptKey = 'custom_initial_prompt'; // 追加
   bool _isLoading = true;
   bool _useProPriority = false;
+  bool _isVerifying = false; // 検証中ステータス
 
   @override
   void initState() {
@@ -82,11 +85,52 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _saveApiKey() async {
-    await _storage.write(key: _apiKeyKey, value: _apiKeyController.text.trim());
-    if (mounted) {
+    final newKey = _apiKeyController.text.trim();
+    if (newKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('API Key saved successfully')),
+        const SnackBar(content: Text('API Keyを入力してください')),
       );
+      return;
+    }
+
+    setState(() {
+      _isVerifying = true;
+    });
+
+    try {
+      // APIキーの有効性検証
+      final model = GenerativeModel(
+        model: 'gemini-3-flash-preview', // 軽量なモデルでテスト
+        apiKey: newKey,
+      );
+      // テストリクエスト送信
+      await model.generateContent([Content.text('test')]);
+
+      // 保存
+      await _storage.write(key: _apiKeyKey, value: newKey);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('API Keyを確認し、保存しました'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('API Keyが無効か、通信エラーです: ${e.toString().split(']').last.trim()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isVerifying = false;
+        });
+      }
     }
   }
 
@@ -120,9 +164,15 @@ class _SettingsPageState extends State<SettingsPage> {
                         obscureText: true,
                       ),
                       const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _saveApiKey,
-                        child: const Text('Save API Key'),
+                      ElevatedButton.icon(
+                        onPressed: _isVerifying ? null : _saveApiKey,
+                        icon: _isVerifying
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.save),
+                        label: Text(_isVerifying ? '検証中...' : 'Save API Key'),
                       ),
                       const SizedBox(height: 24),
                       const Divider(),
@@ -151,7 +201,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        '標準設定: $kDefaultInitialPrompt',
+                        '標準設定: ${AppConfig.initialPromptDefault}',
                         style:
                             const TextStyle(fontSize: 12, color: Colors.grey),
                       ),
@@ -159,6 +209,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       TextField(
                         controller: _promptController,
                         maxLines: 4,
+                        maxLength: AppConfig.maxPromptLength,
                         decoration: const InputDecoration(
                           hintText: 'ここにカスタムプロンプトを入力...',
                           border: OutlineInputBorder(),
@@ -170,9 +221,17 @@ class _SettingsPageState extends State<SettingsPage> {
                           Expanded(
                             child: ElevatedButton(
                               onPressed: () async {
+                                final text = _promptController.text.trim();
+                                if (text.length > AppConfig.maxPromptLength) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('プロンプトが長すぎます')),
+                                  );
+                                  return;
+                                }
+                                
                                 await _storage.write(
                                     key: _customPromptKey,
-                                    value: _promptController.text.trim());
+                                    value: text);
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
@@ -338,7 +397,7 @@ class _HomePageState extends State<HomePage> {
     final customPrompt = await _storage.read(key: 'custom_initial_prompt');
     final prompt = (customPrompt != null && customPrompt.isNotEmpty)
         ? customPrompt
-        : kDefaultInitialPrompt;
+        : AppConfig.initialPromptDefault;
 
     final userMessage = _isCustomPromptActive ? 'カスタム指示を実行中...' : '画像の代替テキストを生成中...';
 
@@ -366,7 +425,7 @@ class _HomePageState extends State<HomePage> {
 
         _chatSession = _model!.startChat();
         final response = await _chatSession!.sendMessage(content.first).timeout(
-          const Duration(seconds: 30),
+          Duration(seconds: AppConfig.timeoutSeconds), // const削除
           onTimeout: () => throw Exception('タイムアウトしました'),
         );
 
@@ -384,23 +443,18 @@ class _HomePageState extends State<HomePage> {
         return;
       } catch (e) {
         debugPrint('Error with $modelName: $e');
-        String errorMsg = e.toString();
-        if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
-          errorMsg = '安全性ポリシーによりこの画像は処理できません（モデル: $modelName）';
-          if (mounted) {
-            setState(() {
-              _messages.add(ChatMessage(role: 'model', text: errorMsg));
-              _isLoading = false;
-              _statusMessage = '';
-            });
-          }
-          return; // Don't fallback for safety violations as other models will likely block it too
-        }
-
+        
         if (i == _modelHierarchy.length - 1) {
+          // 最後のモデルでも失敗した場合のみユーザーに通知
+          String userError = 'エラーが発生しました。時間をおいて再試行してください。';
+          String errorMsg = e.toString();
+          if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
+            userError = '安全性ポリシーによりこの画像は処理できませんでした。';
+          }
+          
           if (mounted) {
             setState(() {
-              _messages.add(ChatMessage(role: 'model', text: 'すべてのモデルでエラーが発生しました: $e'));
+              _messages.add(ChatMessage(role: 'model', text: userError));
               _isLoading = false;
               _statusMessage = '';
             });
@@ -445,7 +499,7 @@ class _HomePageState extends State<HomePage> {
         }
 
         final response = await _chatSession!.sendMessage(Content.text(userMessage)).timeout(
-              const Duration(seconds: 30),
+              Duration(seconds: AppConfig.timeoutSeconds), // const削除
               onTimeout: () => throw Exception('タイムアウトしました'),
             );
         if (mounted) {
@@ -462,22 +516,17 @@ class _HomePageState extends State<HomePage> {
         return;
       } catch (e) {
         debugPrint('Error with $modelName during send: $e');
-        String errorMsg = e.toString();
-        if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
-          errorMsg = '安全性ポリシーにより回答を生成できません（モデル: $modelName）';
-          if (mounted) {
-            setState(() {
-              _messages.add(ChatMessage(role: 'model', text: errorMsg));
-              _isLoading = false;
-              _statusMessage = '';
-            });
-          }
-          return;
-        }
+        
         if (i == _modelHierarchy.length - 1) {
+           String userError = 'エラーが発生しました。';
+           String errorMsg = e.toString();
+           if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
+             userError = '安全性ポリシーにより回答できませんでした。';
+           }
+
           if (mounted) {
             setState(() {
-              _messages.add(ChatMessage(role: 'model', text: 'エラーが発生しました: $e'));
+              _messages.add(ChatMessage(role: 'model', text: userError));
               _isLoading = false;
               _statusMessage = '';
             });
@@ -805,11 +854,13 @@ class _HomePageState extends State<HomePage> {
                   Expanded(
                     child: TextField(
                       controller: _textController,
+                      maxLength: AppConfig.maxPromptLength,
                       decoration: const InputDecoration(
                         hintText: '追加の指示を入力...',
                         border: OutlineInputBorder(),
                         contentPadding:
                             EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        counterText: '', // カウンターを非表示
                       ),
                       onSubmitted: (_) => _sendMessage(),
                       enabled: _imageBytes != null, // Disable if no image

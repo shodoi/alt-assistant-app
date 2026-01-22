@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'config.dart';
 
 class HistoryItem {
   final int? id;
@@ -111,7 +112,7 @@ class HistoryDatabase {
       'history',
       orderBy: 'createdAt DESC',
       limit: 1,
-      offset: 29, // Change from 49 to 29
+      offset: AppConfig.historyLimit - 1, // Change from 49 to 29
     );
 
     if (result.isNotEmpty) {
