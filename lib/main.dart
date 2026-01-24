@@ -155,13 +155,14 @@ class _SettingsPageState extends State<SettingsPage> {
       await SecureStorageHelper.write(key: _customPromptKey, value: _promptController.text);
       
       if (mounted) {
+        FocusScope.of(context).unfocus(); // キーボードを閉じる
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('API Keyを確認し、保存しました'),
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.pop(context); // 成功したら戻る
+        // Navigator.pop(context) を削除
       }
     } catch (e) {
       if (mounted) {

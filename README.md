@@ -61,5 +61,51 @@ Android版は以下のReleasesページから最新のAPKファイルをダウ�
 - **Storage**: flutter_secure_storage
 - **UI Components**: flutter_markdown, image_picker
 
+## ビルドコマンドガイド
+
+### macOS
+- **検証 (Debug)**
+  ```bash
+  flutter run -d macos
+  ```
+- **本番 (Release)**
+  ```bash
+  flutter build macos
+  # ビルド成果物は build/macos/Build/Products/Release/my_alt_generator.app に生成されます
+  ```
+
+### iOS
+- **検証 (Debug)**
+  ```bash
+  flutter run -d ios
+  ```
+- **本番 (Release / Archive)**
+  ```bash
+  flutter build ios
+  # または Xcode から Product > Archive を実行
+  ```
+
+### Android
+- **検証 (Debug)**
+  ```bash
+  flutter run -d android
+  ```
+- **本番 (Release)**
+  ```bash
+  flutter build apk
+  # または App Bundle (Google Play用)
+  flutter build appbundle
+  ```
+
+### Windows
+- **検証 (Debug)**
+  ```bash
+  flutter run -d windows
+  ```
+- **本番 (Release)**
+  ```bash
+  flutter build windows
+  ```
+
 ---
 Created with ❤️ by shodoi
