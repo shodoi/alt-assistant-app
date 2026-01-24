@@ -86,15 +86,26 @@ Android版は以下のReleasesページから最新のAPKファイルをダウ�
   ```
 
 ### Android
-- **検証 (Debug)**
+- **デバイス確認**
   ```bash
-  flutter run -d android
+  flutter devices
+  ```
+  実行結果の例:
+  `A401OP (mobile) • VSVWGMWOQKPJNZFA • android-arm64 ...`
+  - 左側 (`A401OP`): **デバイス名**
+  - 中央 (`VSVWGMWOQKPJNZFA`): **Device ID** (一意の識別子)
+
+- **検証 (Debug)**
+  デバイス名またはDevice IDを指定して実行します。
+  ```bash
+  flutter run -d <Device ID>
+  # 例 (ID指定・推奨): flutter run -d VSVWGMWOQKPJNZFA
+  # 例 (名前指定):    flutter run -d A401OP
   ```
 - **本番 (Release)**
   ```bash
   flutter build apk
-  # または App Bundle (Google Play用)
-  flutter build appbundle
+  # インストール: flutter install -d <Device ID>
   ```
 
 ### Windows

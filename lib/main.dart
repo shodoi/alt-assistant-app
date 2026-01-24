@@ -868,14 +868,62 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           children: [
             if (_imageBytes != null) ...[
-              Container(
-                height: 200,
-                width: double.infinity,
-                color: Colors.grey[200],
-                child: Image.memory(
-                  _imageBytes!,
-                  fit: BoxFit.contain,
-                  semanticLabel: '選択された画像',
+              InkWell(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => Scaffold(
+                        backgroundColor: Colors.black,
+                        body: GestureDetector(
+                          onTap: () => Navigator.pop(context),
+                          behavior: HitTestBehavior.opaque, // 空白部分もタッチ反応させる
+                          child: Center(
+                            child: Hero(
+                              tag: 'selectedImage',
+                              child: Image.memory(
+                                _imageBytes!,
+                                fit: BoxFit.contain,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+                child: Stack(
+                  children: [
+                    Container(
+                      height: 200,
+                      width: double.infinity,
+                      color: Colors.grey[200],
+                      child: Hero(
+                        tag: 'selectedImage',
+                        child: Image.memory(
+                          _imageBytes!,
+                          fit: BoxFit.contain,
+                          semanticLabel: '選択された画像',
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: 8,
+                      bottom: 8,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.5),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.zoom_in,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               if (_messages.isEmpty)
