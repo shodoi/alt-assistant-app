@@ -208,6 +208,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           border: OutlineInputBorder(),
                           helperText: 'Enter your Gemini API key here.',
                         ),
+                        autofillHints: const [AutofillHints.password],
                         obscureText: true,
                       ),
                       const SizedBox(height: 16),
@@ -870,7 +871,11 @@ class _HomePageState extends State<HomePage> {
                 height: 200,
                 width: double.infinity,
                 color: Colors.grey[200],
-                child: Image.memory(_imageBytes!, fit: BoxFit.contain),
+                child: Image.memory(
+                  _imageBytes!,
+                  fit: BoxFit.contain,
+                  semanticLabel: '選択された画像',
+                ),
               ),
               if (_messages.isEmpty)
                 Padding(
@@ -935,9 +940,13 @@ class _HomePageState extends State<HomePage> {
                                 if (index == _messages.lastIndexWhere((m) => m.role == 'user') && !_isLoading)
                                   Padding(
                                     padding: const EdgeInsets.only(left: 8.0),
-                                    child: InkWell(
-                                      onTap: _regenerateLatestResponse,
-                                      child: const Icon(Icons.refresh, size: 18, color: Colors.blue),
+                                    child: Tooltip(
+                                      message: '回答を再生成',
+                                      child: InkWell(
+                                        onTap: _regenerateLatestResponse,
+                                        child: const Icon(Icons.refresh,
+                                            size: 18, color: Colors.blue),
+                                      ),
                                     ),
                                   ),
                               ],
@@ -1005,6 +1014,7 @@ class _HomePageState extends State<HomePage> {
                   IconButton(
                     icon: const Icon(Icons.send),
                     onPressed: _imageBytes != null ? _sendMessage : null,
+                    tooltip: '送信',
                   ),
                 ],
               ),

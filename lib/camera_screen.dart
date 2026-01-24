@@ -104,6 +104,7 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
         floatingActionButton: FloatingActionButton(
           onPressed: _takePicture,
+          tooltip: '写真を撮影',
           child: const Icon(Icons.camera),
         ),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
@@ -137,6 +138,7 @@ class _CameraScreenState extends State<CameraScreen> {
         floatingActionButton: FloatingActionButton(
           backgroundColor: Colors.white,
           onPressed: _takePicture,
+          tooltip: '写真を撮影',
           child: const Icon(Icons.camera, color: Colors.black),
         ),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
