@@ -343,9 +343,9 @@ class _HomePageState extends State<HomePage> {
   static const _apiKeyKey = 'gemini_api_key';
   static const _useProPriorityKey = 'use_pro_priority';
   List<String> _modelHierarchy = [
+    'gemini-2.5-flash-lite',
     'gemini-3-flash-preview',
     'gemini-2.5-flash',
-    'gemini-2.0-flash',
   ];
   int _currentModelIndex = 0;
   int? _currentHistoryId;
@@ -373,12 +373,12 @@ class _HomePageState extends State<HomePage> {
     } else {
       // モデル階層とカスタムプロンプトの動的構築
       List<String> hierarchy = [
+        'gemini-2.5-flash-lite',
         'gemini-3-flash-preview',
         'gemini-2.5-flash',
-        'gemini-2.0-flash',
       ];
       if (proPriority == 'true') {
-        hierarchy.insert(0, 'gemini-3-pro-preview');
+        hierarchy.addAll(['gemini-3-pro-preview', 'gemini-2.5-pro']);
       }
       
       setState(() {
