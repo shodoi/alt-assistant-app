@@ -5,4 +5,12 @@ class AppConfig {
   static const int maxPromptLength = 1000;
   
   static const String initialPromptDefault = 'この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。';
+
+  static const List<String> defaultModelOrder = [
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-3-pro-preview',
+    'gemini-2.5-flash-lite',
+  ];
 }

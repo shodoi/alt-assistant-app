@@ -97,11 +97,11 @@ class _SettingsPageState extends State<SettingsPage> {
   final _apiKeyController = TextEditingController();
   final _promptController = TextEditingController();
   static const _apiKeyKey = 'gemini_api_key';
-  static const _useProPriorityKey = 'use_pro_priority';
+  static const _modelOrderKey = 'model_order';
   static const _customPromptKey = 'custom_initial_prompt';
   bool _isLoading = true;
-  bool _useProPriority = false;
   bool _isVerifying = false;
+  List<String> _modelOrder = [];
 
   @override
   void initState() {
@@ -112,16 +112,40 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _loadSettings() async {
     setState(() => _isLoading = true); // ローディング状態
     final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    final proPriority = await SecureStorageHelper.read(key: _useProPriorityKey);
+    final modelOrderJson = await SecureStorageHelper.read(key: _modelOrderKey);
     final customPrompt = await SecureStorageHelper.read(key: _customPromptKey);
     
+    List<String> loadedOrder = List<String>.from(AppConfig.defaultModelOrder);
+    if (modelOrderJson != null) {
+      try {
+        final List<dynamic> decoded = jsonDecode(modelOrderJson);
+        loadedOrder = decoded.cast<String>();
+        // Check for any missing new models or removed old models
+        final defaultSet = AppConfig.defaultModelOrder.toSet();
+        final loadedSet = loadedOrder.toSet();
+        
+        // Add any missing models to the end
+        for (final model in AppConfig.defaultModelOrder) {
+          if (!loadedSet.contains(model)) {
+            loadedOrder.add(model);
+          }
+        }
+        
+        // Remove any models that are no longer in default (optional, but good for cleanup)
+        loadedOrder.removeWhere((model) => !defaultSet.contains(model));
+
+      } catch (e) {
+        debugPrint('Error decoding model order: $e');
+      }
+    }
+
     if (mounted) {
       setState(() {
         if (key != null) _apiKeyController.text = key;
         if (customPrompt != null) {
           _promptController.text = customPrompt;
         }
-        _useProPriority = proPriority == 'true';
+        _modelOrder = loadedOrder;
         _isLoading = false;
       });
     }
@@ -151,7 +175,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
       // 保存
       await SecureStorageHelper.write(key: _apiKeyKey, value: newKey);
-      await SecureStorageHelper.write(key: _useProPriorityKey, value: _useProPriority.toString());
+      await SecureStorageHelper.write(key: _modelOrderKey, value: jsonEncode(_modelOrder));
       await SecureStorageHelper.write(key: _customPromptKey, value: _promptController.text);
       
       if (mounted) {
@@ -191,8 +215,15 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(
+        title: const Text('Settings'),
+        centerTitle: true,
+        backgroundColor: colorScheme.surface,
+        surfaceTintColor: colorScheme.surfaceTint,
+      ),
       body: SafeArea(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
@@ -202,113 +233,387 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      TextField(
-                        controller: _apiKeyController,
-                        decoration: const InputDecoration(
-                          labelText: 'Gemini API Key',
-                          border: OutlineInputBorder(),
-                          helperText: 'Enter your Gemini API key here.',
+                      // --- API Key Section ---
+                      Card(
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        autofillHints: const [AutofillHints.password],
-                        obscureText: true,
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: _isVerifying ? null : _saveApiKey,
-                        icon: _isVerifying
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.save),
-                        label: Text(_isVerifying ? '検証中...' : 'Save API Key'),
-                      ),
-                      const SizedBox(height: 24),
-                      const Divider(),
-                      SwitchListTile(
-                        title: const Text('Pro モデルを優先する'),
-                        subtitle:
-                            const Text('課金ユーザー向け。gemini-3-pro-preview を最優先で試行します。'),
-                        value: _useProPriority,
-                        onChanged: (value) async {
-                          setState(() {
-                            _useProPriority = value;
-                          });
-                          await SecureStorageHelper.write(
-                            key: _useProPriorityKey,
-                            value: value.toString(),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 24),
-                      const Divider(),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'カスタム初期プロンプト',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '標準設定: ${AppConfig.initialPromptDefault}',
-                        style:
-                            const TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _promptController,
-                        maxLines: 4,
-                        maxLength: AppConfig.maxPromptLength,
-                        decoration: const InputDecoration(
-                          hintText: 'ここにカスタムプロンプトを入力...',
-                          border: OutlineInputBorder(),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.key, color: Colors.teal.shade600, size: 20),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'API Key',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.teal.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _apiKeyController,
+                                decoration: InputDecoration(
+                                  labelText: 'Gemini API Key',
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  helperText: 'Enter your Gemini API key here.',
+                                  prefixIcon: const Icon(Icons.vpn_key_outlined),
+                                ),
+                                autofillHints: const [AutofillHints.password],
+                                obscureText: true,
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                child: FilledButton.icon(
+                                  onPressed: _isVerifying ? null : _saveApiKey,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: Colors.teal.shade600,
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  icon: _isVerifying
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ))
+                                      : const Icon(Icons.save),
+                                  label: Text(_isVerifying ? '検証中...' : 'Save API Key'),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: () async {
-                                final text = _promptController.text.trim();
-                                if (text.length > AppConfig.maxPromptLength) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('プロンプトが長すぎます')),
-                                  );
-                                  return;
-                                }
-                                
-                                await SecureStorageHelper.write(
-                                    key: _customPromptKey,
-                                    value: text);
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                        content:
-                                            Text('Prompt saved successfully')),
-                                  );
-                                }
-                              },
-                              child: const Text('プロンプトを保存'),
-                            ),
+
+                      const SizedBox(height: 16),
+
+                      // --- Model Priority Section ---
+                      Card(
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.swap_vert, color: Colors.deepPurple.shade600, size: 20),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'モデル優先順位',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.deepPurple.shade700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'ドラッグ＆ドロップで並べ替え',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: colorScheme.surfaceContainerLow,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                height: 56.0 * _modelOrder.length + 16, // Dynamic height
+                                child: ReorderableListView(
+                                  buildDefaultDragHandles: false,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  proxyDecorator: (child, index, animation) {
+                                    return AnimatedBuilder(
+                                      animation: animation,
+                                      builder: (context, child) {
+                                        return Material(
+                                          elevation: 4,
+                                          borderRadius: BorderRadius.circular(8),
+                                          color: Colors.deepPurple.shade50,
+                                          shadowColor: Colors.deepPurple.shade200,
+                                          child: child,
+                                        );
+                                      },
+                                      child: child,
+                                    );
+                                  },
+                                  children: [
+                                    for (int index = 0; index < _modelOrder.length; index++)
+                                      ReorderableDragStartListener(
+                                        key: Key(_modelOrder[index]),
+                                        index: index,
+                                        child: Container(
+                                          height: 48,
+                                          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: colorScheme.surface,
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(
+                                              color: index == 0
+                                                  ? Colors.deepPurple.shade300
+                                                  : Colors.grey.shade200,
+                                              width: index == 0 ? 1.5 : 1,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                width: 36,
+                                                alignment: Alignment.center,
+                                                child: Container(
+                                                  width: 24,
+                                                  height: 24,
+                                                  decoration: BoxDecoration(
+                                                    color: index == 0
+                                                        ? Colors.deepPurple.shade600
+                                                        : Colors.grey.shade400,
+                                                    borderRadius: BorderRadius.circular(12),
+                                                  ),
+                                                  alignment: Alignment.center,
+                                                  child: Text(
+                                                    '${index + 1}',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  _modelOrder[index],
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: index == 0
+                                                        ? FontWeight.w600
+                                                        : FontWeight.normal,
+                                                    color: index == 0
+                                                        ? Colors.deepPurple.shade700
+                                                        : null,
+                                                  ),
+                                                ),
+                                              ),
+                                              Icon(
+                                                Icons.drag_indicator,
+                                                color: Colors.grey.shade400,
+                                                size: 20,
+                                              ),
+                                              const SizedBox(width: 8),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                  onReorder: (int oldIndex, int newIndex) {
+                                    setState(() {
+                                      if (oldIndex < newIndex) {
+                                        newIndex -= 1;
+                                      }
+                                      final String item = _modelOrder.removeAt(oldIndex);
+                                      _modelOrder.insert(newIndex, item);
+                                    });
+                                  },
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      onPressed: () async {
+                                        await SecureStorageHelper.write(
+                                          key: _modelOrderKey,
+                                          value: jsonEncode(_modelOrder),
+                                        );
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('モデル順を保存しました'),
+                                              backgroundColor: Colors.green,
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: Colors.deepPurple.shade600,
+                                        padding: const EdgeInsets.symmetric(vertical: 10),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                      ),
+                                      icon: const Icon(Icons.save, size: 18),
+                                      label: const Text('モデル順を保存'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  OutlinedButton(
+                                    onPressed: () async {
+                                      setState(() {
+                                        _modelOrder = List<String>.from(AppConfig.defaultModelOrder);
+                                      });
+                                      await SecureStorageHelper.delete(key: _modelOrderKey);
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('デフォルトに戻しました'),
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    style: OutlinedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                    child: const Text('デフォルトに戻す'),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          TextButton(
-                            onPressed: () async {
-                              await SecureStorageHelper.delete(key: _customPromptKey);
-                              setState(() {
-                                _promptController.clear();
-                              });
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content: Text('Reset to default prompt')),
-                                );
-                              }
-                            },
-                            child: const Text('リセット'),
+                        ),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // --- Custom Prompt Section ---
+                      Card(
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.edit_note, color: Colors.amber.shade800, size: 20),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'カスタム初期プロンプト',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.amber.shade900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                '標準設定: ${AppConfig.initialPromptDefault}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _promptController,
+                                maxLines: 4,
+                                maxLength: AppConfig.maxPromptLength,
+                                decoration: InputDecoration(
+                                  hintText: 'ここにカスタムプロンプトを入力...',
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      onPressed: () async {
+                                        final text = _promptController.text.trim();
+                                        if (text.length > AppConfig.maxPromptLength) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('プロンプトが長すぎます')),
+                                          );
+                                          return;
+                                        }
+                                        
+                                        await SecureStorageHelper.write(
+                                            key: _customPromptKey,
+                                            value: text);
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                                content:
+                                                    Text('プロンプトを保存しました')),
+                                          );
+                                        }
+                                      },
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: Colors.amber.shade800,
+                                        padding: const EdgeInsets.symmetric(vertical: 10),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                      ),
+                                      icon: const Icon(Icons.save, size: 18),
+                                      label: const Text('プロンプトを保存'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  OutlinedButton(
+                                    onPressed: () async {
+                                      await SecureStorageHelper.delete(key: _customPromptKey);
+                                      setState(() {
+                                        _promptController.clear();
+                                      });
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                              content: Text('デフォルトに戻しました')),
+                                        );
+                                      }
+                                    },
+                                    style: OutlinedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                    child: const Text('リセット'),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ],
                   ),
@@ -341,12 +646,8 @@ class _HomePageState extends State<HomePage> {
   String _statusMessage = '';
 
   static const _apiKeyKey = 'gemini_api_key';
-  static const _useProPriorityKey = 'use_pro_priority';
-  List<String> _modelHierarchy = [
-    'gemini-2.5-flash-lite',
-    'gemini-3-flash-preview',
-    'gemini-2.5-flash',
-  ];
+  static const _modelOrderKey = 'model_order';
+  List<String> _modelHierarchy = List<String>.from(AppConfig.defaultModelOrder);
   int _currentModelIndex = 0;
   int? _currentHistoryId;
   String? _customPrompt; // 追加
@@ -361,7 +662,7 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _checkApiKey() async {
     final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    final proPriority = await SecureStorageHelper.read(key: _useProPriorityKey);
+    final modelOrderJson = await SecureStorageHelper.read(key: _modelOrderKey);
     final customPrompt = await SecureStorageHelper.read(key: 'custom_initial_prompt');
 
     if (key == null) {
@@ -372,13 +673,19 @@ class _HomePageState extends State<HomePage> {
       }
     } else {
       // モデル階層とカスタムプロンプトの動的構築
-      List<String> hierarchy = [
-        'gemini-2.5-flash-lite',
-        'gemini-3-flash-preview',
-        'gemini-2.5-flash',
-      ];
-      if (proPriority == 'true') {
-        hierarchy.addAll(['gemini-3-pro-preview', 'gemini-2.5-pro']);
+      List<String> hierarchy = List<String>.from(AppConfig.defaultModelOrder);
+      
+      if (modelOrderJson != null) {
+        try {
+          final List<dynamic> decoded = jsonDecode(modelOrderJson);
+          hierarchy = decoded.cast<String>();
+          // Ensure at least default models are present if something is weird, or just trust the user
+          if (hierarchy.isEmpty) {
+            hierarchy = AppConfig.defaultModelOrder;
+          }
+        } catch (e) {
+          debugPrint('Error loading model order in HomePage: $e');
+        }
       }
       
       setState(() {
@@ -390,6 +697,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _initModel(String apiKey) {
+    if (_modelHierarchy.isEmpty) return; // Should not happen given defaults
     _model = GenerativeModel(
       model: _modelHierarchy[_currentModelIndex],
       apiKey: apiKey,
