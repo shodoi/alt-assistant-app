@@ -3,11 +3,13 @@ class AppConfig {
   static const int maxImageSize = 1024;
   static const int historyLimit = 30;
   static const int maxPromptLength = 1000;
-  
-  static const String initialPromptDefault = 'この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。';
+
+  static const String initialPromptDefault =
+      'この画像の簡潔な代替テキスト（Alt Text）を、装飾（**等）のないプレーンな日本語で生成してください。';
 
   static const List<String> defaultModelOrder = [
+    'gemini-3.7-flash',
     'gemini-3.1-flash-lite',
-    'gemini-3.1-pro-preview',
+    'gemini-3.1-pro',
   ];
 }
