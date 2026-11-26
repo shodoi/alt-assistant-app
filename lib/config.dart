@@ -1,7 +1,5 @@
 class AppConfig {
   static const int timeoutSeconds = 30;
-  static const int maxImageSize = 1024;
-  static const int historyLimit = 30;
   static const int maxPromptLength = 1000;
 
   static const String modelName = 'gemini-4-hydrogen';

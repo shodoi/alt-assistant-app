@@ -1,24 +1,11 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-import 'package:image/image.dart' as img;
 
 import 'config.dart';
-import 'history_database.dart';
-import 'history_page.dart';
-import 'dart:io' show Platform;
-import 'package:file_selector/file_selector.dart';
-import 'package:camera/camera.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'camera_screen.dart';
-
-
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,17 +13,10 @@ void main() {
 }
 
 class SecureStorageHelper {
-  static const _storage = FlutterSecureStorage(
-    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
-  );
+  static const _storage = FlutterSecureStorage();
 
   static Future<String?> read({required String key}) async {
-    if (Platform.isMacOS) {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString(key);
-    } else {
-      return await _storage.read(key: key);
-    }
+    return await _storage.read(key: key);
   }
 
   static Future<void> write({required String key, required String? value}) async {
@@ -44,22 +24,12 @@ class SecureStorageHelper {
       await delete(key: key);
       return;
     }
-    
-    if (Platform.isMacOS) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(key, value);
-    } else {
-      await _storage.write(key: key, value: value);
-    }
+
+    await _storage.write(key: key, value: value);
   }
-  
+
   static Future<void> delete({required String key}) async {
-    if (Platform.isMacOS) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(key);
-    } else {
-      await _storage.delete(key: key);
-    }
+    await _storage.delete(key: key);
   }
 }
 
@@ -92,7 +62,6 @@ class AltTextGeneratorApp extends StatelessWidget {
       routes: {
         '/': (context) => HomePage(httpClient: httpClient),
         '/settings': (context) => SettingsPage(httpClient: httpClient),
-        '/history': (context) => const HistoryPage(),
       },
     );
   }
@@ -474,7 +443,7 @@ class _HomePageState extends State<HomePage> {
   final _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  Uint8List? _imageBytes; // Changed from File? to Uint8List? for Web support
+  Uint8List? _imageBytes;
   List<ChatMessage> _messages = [];
   bool _isLoading = false;
   ChatSession? _chatSession;
@@ -482,7 +451,6 @@ class _HomePageState extends State<HomePage> {
   String _statusMessage = '';
 
   static const _apiKeyKey = 'gemini_api_key';
-  int? _currentHistoryId;
   String? _customPrompt; // 追加
 
   bool get _isCustomPromptActive => _customPrompt != null && _customPrompt!.isNotEmpty;
@@ -519,14 +487,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _pickImage() async {
-    if (Platform.isMacOS) {
-      await _pickImageMacOS();
-    } else {
-      await _pickImageMobile();
-    }
-  }
-
-  Future<void> _pickImageMobile() async {
     final ImageSource? source = await showModalBottomSheet<ImageSource>(
       context: context,
       builder: (context) => SafeArea(
@@ -561,98 +521,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _pickImageMacOS() async {
-    final source = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('画像を選択'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('ファイルから選択'),
-              onTap: () => Navigator.pop(context, 'file'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('カメラで撮影'),
-              onTap: () => Navigator.pop(context, 'camera'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (source == 'file') {
-      const XTypeGroup typeGroup = XTypeGroup(
-        label: 'images',
-        extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'],
-      );
-      final XFile? file = await openFile(acceptedTypeGroups: [typeGroup]);
-      if (file != null) {
-        final bytes = await file.readAsBytes();
-        setState(() {
-          _imageBytes = bytes;
-          _messages = [];
-          _chatSession = null;
-        });
-      }
-    } else if (source == 'camera') {
-      await _takePictureWithCamera();
-    }
-  }
-
-  Future<void> _takePictureWithCamera() async {
-    try {
-      CameraDescription? camera;
-      
-      if (!Platform.isMacOS) {
-        final cameras = await availableCameras();
-        if (cameras.isEmpty) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('カメラが見つかりません')),
-            );
-          }
-          return;
-        }
-        camera = cameras.first;
-      }
-
-      if (!mounted) return;
-      final result = await Navigator.push<XFile>(
-        context,
-        MaterialPageRoute(
-          builder: (context) => CameraScreen(camera: camera),
-        ),
-      );
-
-      if (result != null) {
-        final bytes = await result.readAsBytes();
-        setState(() {
-          _imageBytes = bytes;
-          _messages = [];
-          _chatSession = null;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error accessing camera: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('カメラへのアクセスに失敗しました')),
-        );
-      }
-    }
-  }
-
   /// Sends [content] via [_chatSession] with timeout, error/safety handling, and state updates.
   Future<void> _sendChatRequest({
     required Content content,
     required String genericErrorMessage,
     required String safetyErrorMessage,
     required String errorLogPrefix,
-    void Function(String? rawText, String cleanedText)? onSuccess,
+    VoidCallback? onSuccess,
   }) async {
     try {
       final response = await _chatSession!.sendMessage(content).timeout(
@@ -667,7 +542,7 @@ class _HomePageState extends State<HomePage> {
           _isLoading = false;
           _statusMessage = '';
         });
-        onSuccess?.call(response.text, cleanedText);
+        onSuccess?.call();
       }
     } catch (e) {
       debugPrint('$errorLogPrefix: $e');
@@ -721,11 +596,6 @@ class _HomePageState extends State<HomePage> {
       genericErrorMessage: 'エラーが発生しました。時間をおいて再試行してください。',
       safetyErrorMessage: '安全性ポリシーによりこの画像は処理できませんでした。',
       errorLogPrefix: 'Error generating alt text',
-      onSuccess: (rawText, cleanedText) {
-        if (rawText != null) {
-          _saveToHistory(cleanedText);
-        }
-      },
     );
   }
 
@@ -750,14 +620,7 @@ class _HomePageState extends State<HomePage> {
       genericErrorMessage: 'エラーが発生しました。',
       safetyErrorMessage: '安全性ポリシーにより回答できませんでした。',
       errorLogPrefix: 'Error during send',
-      onSuccess: (_, __) {
-        _scrollToBottom();
-        // チャットの続きも履歴に保存（タイトルは最初の生成結果を維持）
-        final historyTitle = _messages
-            .firstWhere((m) => m.role == 'model', orElse: () => _messages.first)
-            .text;
-        _saveToHistory(historyTitle);
-      },
+      onSuccess: _scrollToBottom,
     );
   }
 
@@ -802,88 +665,6 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> _restoreFromHistory(HistoryItem item) async {
-    final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    if (key == null) return;
-
-    setState(() {
-      _isLoading = true;
-      _statusMessage = 'チャットを復元中...';
-    });
-
-    try {
-      final messages = (jsonDecode(item.messagesJson ?? '[]') as List)
-          .map((m) => ChatMessage.fromJson(m))
-          .toList();
-
-      setState(() {
-        _imageBytes = item.fullImage;
-        _messages = messages;
-        _isLoading = false;
-        _statusMessage = '';
-        _currentHistoryId = item.id; // セッションIDをセット
-      });
-
-      // Re-initialize model and chat session with history
-      _initModel(key);
-      final history = messages
-          .map((m) => Content(m.role, [TextPart(m.text)]))
-          .toList();
-      
-      // Remove the last message if it's from the model, because startChat will use it
-      // Actually, startChat(history: ...) expects the full history.
-      _chatSession = _model!.startChat(history: history);
-    } catch (e) {
-      debugPrint('Error restoring history: $e');
-      setState(() {
-        _isLoading = false;
-        _statusMessage = '';
-      });
-    }
-  }
-
-  Future<void> _saveToHistory(String text) async {
-    if (_imageBytes == null) return;
-
-    try {
-      final originalImage = img.decodeImage(_imageBytes!);
-      if (originalImage == null) return;
-
-      // サムネイル作成 (100x100程度)
-      final thumbnailImage = img.copyResize(originalImage, width: 100);
-      final thumbnailBytes = Uint8List.fromList(img.encodePng(thumbnailImage));
-
-      // 解析用のフル画像を少し圧縮して保存 (max 1024px)
-      img.Image optimizedImage = originalImage;
-      if (originalImage.width > 1024 || originalImage.height > 1024) {
-        optimizedImage = img.copyResize(originalImage,
-            width: originalImage.width > originalImage.height ? 1024 : null,
-            height: originalImage.height >= originalImage.width ? 1024 : null);
-      }
-      final fullImageBytes = Uint8List.fromList(img.encodeJpg(optimizedImage, quality: 80));
-
-      final item = HistoryItem(
-        id: _currentHistoryId, // 指定があれば更新になる
-        altText: text,
-        thumbnail: thumbnailBytes,
-        fullImage: fullImageBytes,
-        messagesJson: jsonEncode(_messages.map((m) => m.toJson()).toList()),
-        createdAt: DateTime.now(),
-      );
-
-      if (_currentHistoryId == null) {
-        final id = await HistoryDatabase.instance.insert(item);
-        setState(() {
-          _currentHistoryId = id;
-        });
-      } else {
-        await HistoryDatabase.instance.update(item);
-      }
-    } catch (e) {
-      debugPrint('Error saving history: $e');
-    }
-  }
-
   String _cleanAiText(String text) {
     // 太字などのマークダウン装飾記号を除去
     return text.replaceAll('**', '');
@@ -897,7 +678,6 @@ class _HomePageState extends State<HomePage> {
       _textController.clear();
       _isLoading = false;
       _statusMessage = '';
-      _currentHistoryId = null; // IDをリセット
     });
   }
 
@@ -927,16 +707,6 @@ class _HomePageState extends State<HomePage> {
               onPressed: _resetState,
               tooltip: 'リセット',
             ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () async {
-              final result = await Navigator.pushNamed(context, '/history');
-              if (result is HistoryItem && mounted) {
-                _restoreFromHistory(result);
-              }
-            },
-            tooltip: '履歴',
-          ),
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () async {
@@ -1068,7 +838,7 @@ class _HomePageState extends State<HomePage> {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Flexible(child: MarkdownBody(data: msg.text)),
+                                Flexible(child: SelectableText(msg.text)),
                                 if (index == _messages.lastIndexWhere((m) => m.role == 'user') && !_isLoading)
                                   Padding(
                                     padding: const EdgeInsets.only(left: 8.0),
@@ -1084,7 +854,7 @@ class _HomePageState extends State<HomePage> {
                               ],
                             )
                           else
-                            MarkdownBody(data: msg.text),
+                            SelectableText(msg.text),
                           if (!isUser) ...[
                             const SizedBox(height: 8),
                             InkWell(
@@ -1163,14 +933,4 @@ class ChatMessage {
   final String text;
 
   ChatMessage({required this.role, required this.text});
-
-  Map<String, dynamic> toJson() => {
-        'role': role,
-        'text': text,
-      };
-
-  factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
-        role: json['role'] as String,
-        text: json['text'] as String,
-      );
 }
