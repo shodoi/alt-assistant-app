@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -6,6 +8,10 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
 import 'config.dart';
+import 'error_classifier.dart';
+import 'gemini_files_client.dart';
+import 'image_mime.dart';
+import 'resilient_http_client.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,13 +32,39 @@ GenerativeModel _createGenerativeModel({
   );
 }
 
-class AltTextGeneratorApp extends StatelessWidget {
+class AltTextGeneratorApp extends StatefulWidget {
   final http.Client? httpClient;
 
   const AltTextGeneratorApp({super.key, this.httpClient});
 
   @override
+  State<AltTextGeneratorApp> createState() => _AltTextGeneratorAppState();
+}
+
+class _AltTextGeneratorAppState extends State<AltTextGeneratorApp> {
+  http.Client? _ownedBaseClient;
+
+  http.Client get _sharedBaseClient =>
+      widget.httpClient ?? (_ownedBaseClient ??= createBaseHttpClient());
+
+  @override
+  void didUpdateWidget(covariant AltTextGeneratorApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.httpClient == null && widget.httpClient != null) {
+      _ownedBaseClient?.close();
+      _ownedBaseClient = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ownedBaseClient?.close();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final baseClient = _sharedBaseClient;
     return MaterialApp(
       title: 'Alt 生成くん',
       theme: ThemeData(
@@ -41,8 +73,8 @@ class AltTextGeneratorApp extends StatelessWidget {
       ),
       initialRoute: '/',
       routes: {
-        '/': (context) => HomePage(httpClient: httpClient),
-        '/settings': (context) => SettingsPage(httpClient: httpClient),
+        '/': (context) => HomePage(httpClient: baseClient),
+        '/settings': (context) => SettingsPage(httpClient: baseClient),
       },
     );
   }
@@ -62,6 +94,12 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _apiKeyController = TextEditingController();
   final _promptController = TextEditingController();
+  final _cancelHandle = RequestCancelHandle();
+
+  late final http.Client _baseClient;
+  late final bool _ownsBaseClient;
+  late final TimeoutAbortingHttpClient _resilientClient;
+
   static const _apiKeyKey = 'gemini_api_key';
   static const _customPromptKey = 'custom_initial_prompt';
   bool _isLoading = true;
@@ -70,11 +108,17 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    _ownsBaseClient = widget.httpClient == null;
+    _baseClient = widget.httpClient ?? createBaseHttpClient();
+    _resilientClient = createResilientHttpClient(
+      baseClient: _baseClient,
+      cancelHandle: _cancelHandle,
+    );
     _loadSettings();
   }
 
   Future<void> _loadSettings() async {
-    setState(() => _isLoading = true); // ローディング状態
+    setState(() => _isLoading = true);
     final key = await _secureStorage.read(key: _apiKeyKey);
     final customPrompt = await _secureStorage.read(key: _customPromptKey);
 
@@ -103,33 +147,43 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      // APIキーの有効性検証
       final model = _createGenerativeModel(
         apiKey: newKey,
-        httpClient: widget.httpClient,
+        httpClient: _resilientClient,
       );
-      // テストリクエスト
       await model.generateContent([Content.text('test')]);
 
-      // 保存
       await _secureStorage.write(key: _apiKeyKey, value: newKey);
-      await _secureStorage.write(key: _customPromptKey, value: _promptController.text);
-      
+      await _secureStorage.write(
+        key: _customPromptKey,
+        value: _promptController.text,
+      );
+
       if (mounted) {
-        FocusScope.of(context).unfocus(); // キーボードを閉じる
+        FocusScope.of(context).unfocus();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('API Keyを確認し、保存しました'),
             backgroundColor: Colors.green,
           ),
         );
-        // Navigator.pop(context) を削除
       }
+    } on RequestCancelledException {
+      // Cancelled on dispose; do not surface an error snackbar.
     } catch (e) {
+      final classified = classifyError(
+        e,
+        secretApiKey: newKey,
+        httpStatusCode: _resilientClient.lastResponseStatusCode,
+      );
+      debugPrint(
+        'Error verifying API key: '
+        '${maskSecrets(e.toString(), secretApiKey: newKey)}',
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('API Keyが無効か、通信エラーです: ${e.toString().split(']').last.trim()}'),
+            content: Text(classified.format()),
             backgroundColor: Colors.red,
           ),
         );
@@ -145,6 +199,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
+    _cancelHandle.cancelActiveRequests();
+    _resilientClient.close();
+    if (_ownsBaseClient) {
+      _baseClient.close();
+    }
     _apiKeyController.dispose();
     _promptController.dispose();
     super.dispose();
@@ -183,7 +242,11 @@ class _SettingsPageState extends State<SettingsPage> {
                             children: [
                               Row(
                                 children: [
-                                  Icon(Icons.key, color: Colors.teal.shade600, size: 20),
+                                  Icon(
+                                    Icons.key,
+                                    color: Colors.teal.shade600,
+                                    size: 20,
+                                  ),
                                   const SizedBox(width: 8),
                                   Text(
                                     'API Key',
@@ -204,7 +267,8 @@ class _SettingsPageState extends State<SettingsPage> {
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   helperText: 'Enter your Gemini API key here.',
-                                  prefixIcon: const Icon(Icons.vpn_key_outlined),
+                                  prefixIcon:
+                                      const Icon(Icons.vpn_key_outlined),
                                 ),
                                 autofillHints: const [AutofillHints.password],
                                 obscureText: true,
@@ -216,7 +280,9 @@ class _SettingsPageState extends State<SettingsPage> {
                                   onPressed: _isVerifying ? null : _saveApiKey,
                                   style: FilledButton.styleFrom(
                                     backgroundColor: Colors.teal.shade600,
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(8),
                                     ),
@@ -228,9 +294,12 @@ class _SettingsPageState extends State<SettingsPage> {
                                           child: CircularProgressIndicator(
                                             strokeWidth: 2,
                                             color: Colors.white,
-                                          ))
+                                          ),
+                                        )
                                       : const Icon(Icons.save),
-                                  label: Text(_isVerifying ? '検証中...' : 'Save API Key'),
+                                  label: Text(
+                                    _isVerifying ? '検証中...' : 'Save API Key',
+                                  ),
                                 ),
                               ),
                             ],
@@ -253,7 +322,11 @@ class _SettingsPageState extends State<SettingsPage> {
                             children: [
                               Row(
                                 children: [
-                                  Icon(Icons.smart_toy_outlined, color: Colors.deepPurple.shade600, size: 20),
+                                  Icon(
+                                    Icons.smart_toy_outlined,
+                                    color: Colors.deepPurple.shade600,
+                                    size: 20,
+                                  ),
                                   const SizedBox(width: 8),
                                   Text(
                                     '使用モデル',
@@ -268,11 +341,16 @@ class _SettingsPageState extends State<SettingsPage> {
                               const SizedBox(height: 12),
                               Container(
                                 width: double.infinity,
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 12,
+                                ),
                                 decoration: BoxDecoration(
                                   color: colorScheme.surfaceContainerLow,
                                   borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: Colors.deepPurple.shade200),
+                                  border: Border.all(
+                                    color: Colors.deepPurple.shade200,
+                                  ),
                                 ),
                                 child: Text(
                                   AppConfig.modelName,
@@ -303,7 +381,11 @@ class _SettingsPageState extends State<SettingsPage> {
                             children: [
                               Row(
                                 children: [
-                                  Icon(Icons.edit_note, color: Colors.amber.shade800, size: 20),
+                                  Icon(
+                                    Icons.edit_note,
+                                    color: Colors.amber.shade800,
+                                    size: 20,
+                                  ),
                                   const SizedBox(width: 8),
                                   Text(
                                     'カスタム初期プロンプト',
@@ -341,30 +423,40 @@ class _SettingsPageState extends State<SettingsPage> {
                                   Expanded(
                                     child: FilledButton.icon(
                                       onPressed: () async {
-                                        final text = _promptController.text.trim();
-                                        if (text.length > AppConfig.maxPromptLength) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('プロンプトが長すぎます')),
+                                        final text =
+                                            _promptController.text.trim();
+                                        if (text.length >
+                                            AppConfig.maxPromptLength) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            const SnackBar(
+                                              content: Text('プロンプトが長すぎます'),
+                                            ),
                                           );
                                           return;
                                         }
-                                        
+
                                         await _secureStorage.write(
-                                            key: _customPromptKey,
-                                            value: text);
+                                          key: _customPromptKey,
+                                          value: text,
+                                        );
                                         if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
                                             const SnackBar(
-                                                content:
-                                                    Text('プロンプトを保存しました')),
+                                              content: Text('プロンプトを保存しました'),
+                                            ),
                                           );
                                         }
                                       },
                                       style: FilledButton.styleFrom(
                                         backgroundColor: Colors.amber.shade800,
-                                        padding: const EdgeInsets.symmetric(vertical: 10),
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 10,
+                                        ),
                                         shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(8),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
                                         ),
                                       ),
                                       icon: const Icon(Icons.save, size: 18),
@@ -374,19 +466,26 @@ class _SettingsPageState extends State<SettingsPage> {
                                   const SizedBox(width: 8),
                                   OutlinedButton(
                                     onPressed: () async {
-                                      await _secureStorage.delete(key: _customPromptKey);
+                                      await _secureStorage.delete(
+                                        key: _customPromptKey,
+                                      );
                                       setState(() {
                                         _promptController.clear();
                                       });
                                       if (context.mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
                                           const SnackBar(
-                                              content: Text('デフォルトに戻しました')),
+                                            content: Text('デフォルトに戻しました'),
+                                          ),
                                         );
                                       }
                                     },
                                     style: OutlinedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 10,
+                                        horizontal: 16,
+                                      ),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(8),
                                       ),
@@ -423,47 +522,95 @@ class _HomePageState extends State<HomePage> {
   final _picker = ImagePicker();
   final _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final _cancelHandle = RequestCancelHandle();
+
+  late final http.Client _baseClient;
+  late final bool _ownsBaseClient;
+  late final TimeoutAbortingHttpClient _resilientClient;
+  late final GeminiFilesClient _filesClient;
 
   Uint8List? _imageBytes;
+  String? _imageMimeType;
+  UploadedGeminiFile? _uploadedFile;
   List<ChatMessage> _messages = [];
   bool _isLoading = false;
   ChatSession? _chatSession;
   GenerativeModel? _model;
   String _statusMessage = '';
+  String? _currentApiKey;
+  int _operationId = 0;
 
   static const _apiKeyKey = 'gemini_api_key';
-  String? _customPrompt; // 追加
+  String? _customPrompt;
 
-  bool get _isCustomPromptActive => _customPrompt != null && _customPrompt!.isNotEmpty;
+  bool get _isCustomPromptActive =>
+      _customPrompt != null && _customPrompt!.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
+    _ownsBaseClient = widget.httpClient == null;
+    _baseClient = widget.httpClient ?? createBaseHttpClient();
+    _resilientClient = createResilientHttpClient(
+      baseClient: _baseClient,
+      cancelHandle: _cancelHandle,
+    );
+    _filesClient = GeminiFilesClient(httpClient: _resilientClient);
     _checkApiKey();
+  }
+
+  Future<void>? _discardUploadedFile() {
+    final uploaded = _uploadedFile;
+    _uploadedFile = null;
+    if (uploaded == null) return null;
+    final future = _filesClient.deleteFileBestEffort(
+      fileName: uploaded.name,
+      apiKey: uploaded.apiKey,
+    );
+    unawaited(future);
+    return future;
   }
 
   Future<void> _checkApiKey() async {
     final key = await _secureStorage.read(key: _apiKeyKey);
-    final customPrompt = await _secureStorage.read(key: 'custom_initial_prompt');
+    final customPrompt =
+        await _secureStorage.read(key: 'custom_initial_prompt');
+    if (!mounted) return;
 
     if (key == null) {
-      if (mounted) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
           Navigator.pushNamed(context, '/settings');
-        });
-      }
-    } else {
-      setState(() {
-        _customPrompt = customPrompt; // ステートを更新
+        }
       });
-      _initModel(key);
+      return;
     }
+
+    final apiKeyChanged = (_currentApiKey != null && _currentApiKey != key) ||
+        (_uploadedFile != null && _uploadedFile!.apiKey != key);
+    _currentApiKey = key;
+
+    if (apiKeyChanged) {
+      _operationId++;
+      _cancelHandle.cancelActiveRequests();
+      _discardUploadedFile();
+      _chatSession = null;
+    }
+
+    setState(() {
+      _customPrompt = customPrompt;
+      if (apiKeyChanged) {
+        _isLoading = false;
+        _statusMessage = '';
+      }
+    });
+    _initModel(key);
   }
 
   void _initModel(String apiKey) {
     _model = _createGenerativeModel(
       apiKey: apiKey,
-      httpClient: widget.httpClient,
+      httpClient: _resilientClient,
     );
   }
 
@@ -491,32 +638,81 @@ class _HomePageState extends State<HomePage> {
 
     if (source == null) return;
 
-    final pickedFile = await _picker.pickImage(source: source);
+    final pickedFile = await _picker.pickImage(
+      source: source,
+      maxWidth: AppConfig.imageMaxWidth,
+      maxHeight: AppConfig.imageMaxHeight,
+      imageQuality: AppConfig.imageQuality,
+    );
     if (pickedFile != null) {
       final bytes = await pickedFile.readAsBytes();
+      if (!mounted) return;
+      _operationId++;
+      _cancelHandle.cancelActiveRequests();
+      _discardUploadedFile();
       setState(() {
         _imageBytes = bytes;
+        _imageMimeType = detectImageMimeType(bytes);
         _messages = [];
         _chatSession = null;
+        _isLoading = false;
+        _statusMessage = '';
       });
     }
   }
 
-  /// Sends [content] via [_chatSession] with timeout, error/safety handling, and state updates.
+  /// Uploads [_imageBytes] to the Gemini Files API if not already cached for
+  /// [apiKey]. Returns `null` if cancelled or stale, and rethrows errors so
+  /// callers never fall back to inline Base64 data.
+  Future<UploadedGeminiFile?> _ensureImageUploaded({
+    required int opId,
+    required String apiKey,
+  }) async {
+    final existing = _uploadedFile;
+    if (existing != null && existing.apiKey == apiKey) {
+      return existing;
+    }
+    if (existing != null) {
+      _discardUploadedFile();
+    }
+
+    final bytes = _imageBytes;
+    if (bytes == null) return null;
+    final mimeType = _imageMimeType ?? detectImageMimeType(bytes);
+
+    final uploaded = await _filesClient.uploadImage(
+      bytes: bytes,
+      mimeType: mimeType,
+      apiKey: apiKey,
+    );
+
+    if (!mounted || _operationId != opId) {
+      unawaited(
+        _filesClient.deleteFileBestEffort(
+          fileName: uploaded.name,
+          apiKey: uploaded.apiKey,
+        ),
+      );
+      return null;
+    }
+
+    _uploadedFile = uploaded;
+    return uploaded;
+  }
+
+  /// Sends [content] via [_chatSession] with abort-aware timeout, classified
+  /// error handling, and state updates.
   Future<void> _sendChatRequest({
+    required int opId,
+    required String apiKey,
     required Content content,
-    required String genericErrorMessage,
-    required String safetyErrorMessage,
     required String errorLogPrefix,
     VoidCallback? onSuccess,
   }) async {
     try {
-      final response = await _chatSession!.sendMessage(content).timeout(
-        const Duration(seconds: AppConfig.timeoutSeconds),
-        onTimeout: () => throw Exception('タイムアウトしました'),
-      );
+      final response = await _chatSession!.sendMessage(content);
 
-      if (mounted) {
+      if (mounted && _operationId == opId) {
         final cleanedText = _cleanAiText(response.text ?? 'No response');
         setState(() {
           _messages.add(ChatMessage(role: 'model', text: cleanedText));
@@ -525,22 +721,24 @@ class _HomePageState extends State<HomePage> {
         });
         onSuccess?.call();
       }
+    } on RequestCancelledException {
+      // Cancelled by reset, selecting a new image, API key change, or dispose.
     } catch (e) {
-      debugPrint('$errorLogPrefix: $e');
+      if (!mounted || _operationId != opId) return;
+      final classified = classifyError(
+        e,
+        secretApiKey: apiKey,
+        httpStatusCode: _resilientClient.lastResponseStatusCode,
+      );
+      debugPrint(
+        '$errorLogPrefix: ${maskSecrets(e.toString(), secretApiKey: apiKey)}',
+      );
 
-      final errorMsg = e.toString();
-      final userError =
-          (errorMsg.contains('SAFETY') || errorMsg.contains('safety'))
-              ? safetyErrorMessage
-              : genericErrorMessage;
-
-      if (mounted) {
-        setState(() {
-          _messages.add(ChatMessage(role: 'model', text: userError));
-          _isLoading = false;
-          _statusMessage = '';
-        });
-      }
+      setState(() {
+        _messages.add(ChatMessage(role: 'model', text: classified.format()));
+        _isLoading = false;
+        _statusMessage = '';
+      });
     }
   }
 
@@ -553,53 +751,150 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    final customPrompt = await _secureStorage.read(key: 'custom_initial_prompt');
+    final customPrompt =
+        await _secureStorage.read(key: 'custom_initial_prompt');
+    if (!mounted) return;
+
+    _currentApiKey = key;
+    if (_uploadedFile != null && _uploadedFile!.apiKey != key) {
+      _discardUploadedFile();
+      _chatSession = null;
+    }
+
     final prompt = (customPrompt != null && customPrompt.isNotEmpty)
         ? customPrompt
         : AppConfig.initialPromptDefault;
 
-    final userMessage = _isCustomPromptActive ? 'カスタム指示を実行中...' : '画像の代替テキストを生成中...';
+    final userMessage =
+        _isCustomPromptActive ? 'カスタム指示を実行中...' : '画像の代替テキストを生成中...';
+    final needsUpload = _uploadedFile == null;
+    final opId = ++_operationId;
 
     setState(() {
       _isLoading = true;
-      _statusMessage = 'Altテキストを生成中...';
+      _statusMessage = needsUpload ? '画像をアップロード中...' : 'Altテキストを生成中...';
       _messages.add(ChatMessage(role: 'user', text: userMessage));
     });
+
+    UploadedGeminiFile? uploaded;
+    try {
+      uploaded = await _ensureImageUploaded(opId: opId, apiKey: key);
+    } on RequestCancelledException {
+      return;
+    } catch (e) {
+      if (!mounted || _operationId != opId) return;
+      final classified = classifyError(
+        e,
+        secretApiKey: key,
+        httpStatusCode: _resilientClient.lastResponseStatusCode,
+      );
+      debugPrint(
+        'Error uploading image: '
+        '${maskSecrets(e.toString(), secretApiKey: key)}',
+      );
+      setState(() {
+        _messages.add(ChatMessage(role: 'model', text: classified.format()));
+        _isLoading = false;
+        _statusMessage = '';
+      });
+      return;
+    }
+
+    if (uploaded == null || !mounted || _operationId != opId) return;
+
+    if (needsUpload) {
+      setState(() {
+        _statusMessage = 'Altテキストを生成中...';
+      });
+    }
 
     _initModel(key);
     _chatSession = _model!.startChat();
 
     await _sendChatRequest(
+      opId: opId,
+      apiKey: key,
       content: Content.multi([
         TextPart(prompt),
-        DataPart('image/jpeg', _imageBytes!),
+        FilePart(uploaded.uri),
       ]),
-      genericErrorMessage: 'エラーが発生しました。時間をおいて再試行してください。',
-      safetyErrorMessage: '安全性ポリシーによりこの画像は処理できませんでした。',
       errorLogPrefix: 'Error generating alt text',
     );
   }
 
   Future<void> _sendMessage() async {
-    if (_textController.text.isEmpty || _chatSession == null) return;
+    if (_textController.text.isEmpty || _imageBytes == null) return;
 
     final key = await _secureStorage.read(key: _apiKeyKey);
-    if (key == null) return;
+    if (key == null || !mounted) return;
+
+    _currentApiKey = key;
+    if (_uploadedFile != null && _uploadedFile!.apiKey != key) {
+      _discardUploadedFile();
+      _chatSession = null;
+    }
 
     final userMessage = _textController.text;
+    final opId = ++_operationId;
+    final needsUpload = _chatSession == null && _uploadedFile == null;
+
     setState(() {
       _messages.add(ChatMessage(role: 'user', text: userMessage));
       _isLoading = true;
-      _statusMessage = '回答を生成中...';
+      _statusMessage = needsUpload ? '画像をアップロード中...' : '回答を生成中...';
       _textController.clear();
     });
 
     _scrollToBottom();
 
+    Content contentToSend;
+    if (_chatSession == null) {
+      UploadedGeminiFile? uploaded;
+      try {
+        uploaded = await _ensureImageUploaded(opId: opId, apiKey: key);
+      } on RequestCancelledException {
+        return;
+      } catch (e) {
+        if (!mounted || _operationId != opId) return;
+        final classified = classifyError(
+          e,
+          secretApiKey: key,
+          httpStatusCode: _resilientClient.lastResponseStatusCode,
+        );
+        debugPrint(
+          'Error uploading image for chat: '
+          '${maskSecrets(e.toString(), secretApiKey: key)}',
+        );
+        setState(() {
+          _messages.add(ChatMessage(role: 'model', text: classified.format()));
+          _isLoading = false;
+          _statusMessage = '';
+        });
+        return;
+      }
+
+      if (uploaded == null || !mounted || _operationId != opId) return;
+
+      if (needsUpload) {
+        setState(() {
+          _statusMessage = '回答を生成中...';
+        });
+      }
+
+      _initModel(key);
+      _chatSession = _model!.startChat();
+      contentToSend = Content.multi([
+        TextPart(userMessage),
+        FilePart(uploaded.uri),
+      ]);
+    } else {
+      contentToSend = Content.text(userMessage);
+    }
+
     await _sendChatRequest(
-      content: Content.text(userMessage),
-      genericErrorMessage: 'エラーが発生しました。',
-      safetyErrorMessage: '安全性ポリシーにより回答できませんでした。',
+      opId: opId,
+      apiKey: key,
+      content: contentToSend,
       errorLogPrefix: 'Error during send',
       onSuccess: _scrollToBottom,
     );
@@ -608,7 +903,6 @@ class _HomePageState extends State<HomePage> {
   void _regenerateLatestResponse() {
     if (_messages.isEmpty) return;
 
-    // 最新のユーザーメッセージを探す
     int lastUserIndex = -1;
     for (int i = _messages.length - 1; i >= 0; i--) {
       if (_messages[i].role == 'user') {
@@ -621,12 +915,12 @@ class _HomePageState extends State<HomePage> {
 
     final lastUserMsg = _messages[lastUserIndex];
 
-    // そのユーザーメッセージ以降をすべて削除
     setState(() {
       _messages.removeRange(lastUserIndex, _messages.length);
     });
 
-    if (lastUserMsg.text == '画像の代替テキストを生成中...' || lastUserMsg.text == 'カスタム指示を実行中...') {
+    if (lastUserMsg.text == '画像の代替テキストを生成中...' ||
+        lastUserMsg.text == 'カスタム指示を実行中...') {
       _generateAltText();
     } else {
       _textController.text = lastUserMsg.text;
@@ -647,13 +941,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _cleanAiText(String text) {
-    // 太字などのマークダウン装飾記号を除去
     return text.replaceAll('**', '');
   }
 
   void _resetState() {
+    _operationId++;
+    _cancelHandle.cancelActiveRequests();
+    _discardUploadedFile();
     setState(() {
       _imageBytes = null;
+      _imageMimeType = null;
       _messages = [];
       _chatSession = null;
       _textController.clear();
@@ -671,6 +968,17 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _operationId++;
+    _cancelHandle.cancelActiveRequests();
+    final deleteFuture = _discardUploadedFile();
+    _resilientClient.close();
+    if (_ownsBaseClient) {
+      if (deleteFuture != null) {
+        unawaited(deleteFuture.whenComplete(_baseClient.close));
+      } else {
+        _baseClient.close();
+      }
+    }
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -692,7 +1000,7 @@ class _HomePageState extends State<HomePage> {
             icon: const Icon(Icons.settings),
             onPressed: () async {
               await Navigator.pushNamed(context, '/settings');
-              _checkApiKey();
+              await _checkApiKey();
             },
             tooltip: '設定',
           ),
@@ -711,7 +1019,7 @@ class _HomePageState extends State<HomePage> {
                         backgroundColor: Colors.black,
                         body: GestureDetector(
                           onTap: () => Navigator.pop(context),
-                          behavior: HitTestBehavior.opaque, // 空白部分もタッチ反応させる
+                          behavior: HitTestBehavior.opaque,
                           child: Center(
                             child: Hero(
                               tag: 'selectedImage',
@@ -820,15 +1128,22 @@ class _HomePageState extends State<HomePage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Flexible(child: SelectableText(msg.text)),
-                                if (index == _messages.lastIndexWhere((m) => m.role == 'user') && !_isLoading)
+                                if (index ==
+                                        _messages.lastIndexWhere(
+                                          (m) => m.role == 'user',
+                                        ) &&
+                                    !_isLoading)
                                   Padding(
                                     padding: const EdgeInsets.only(left: 8.0),
                                     child: Tooltip(
                                       message: '回答を再生成',
                                       child: InkWell(
                                         onTap: _regenerateLatestResponse,
-                                        child: const Icon(Icons.refresh,
-                                            size: 18, color: Colors.blue),
+                                        child: const Icon(
+                                          Icons.refresh,
+                                          size: 18,
+                                          color: Colors.blue,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -862,9 +1177,10 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.all(8.0),
                 child: Column(
                   children: [
-                    Text(_statusMessage,
-                        style:
-                            const TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text(
+                      _statusMessage,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
                     const SizedBox(height: 4),
                     const LinearProgressIndicator(),
                   ],
@@ -888,10 +1204,10 @@ class _HomePageState extends State<HomePage> {
                         border: OutlineInputBorder(),
                         contentPadding:
                             EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        counterText: '', // カウンターを非表示
+                        counterText: '',
                       ),
                       onSubmitted: (_) => _sendMessage(),
-                      enabled: _imageBytes != null, // Disable if no image
+                      enabled: _imageBytes != null,
                     ),
                   ),
                   IconButton(

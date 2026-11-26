@@ -22,6 +22,7 @@ Android 版は以下の Releases ページから最新の APK ファイルをダ
 
 - **AIによる代替テキスト生成**: Google の Gemini AI が画像を解析し、自然な日本語で説明文を作成します。
 - **単一最新モデル対応**: 最新の `gemini-4-hydrogen` モデルを採用し、シンプルで安定した代替テキスト生成・チャット体験を提供します。
+- **画像最適化と Gemini Files API 連携**: 画像選択時に Android 標準リサイザーで長辺 1536px・JPEG 品質 85 に軽量化し、マジックバイトから正確な MIME タイプ（JPEG / PNG / WebP / GIF）を判定して Gemini Files API へ生バイナリで 1 回だけアップロードします。追加チャットや推論失敗時の再生成ではファイル URI を再利用して画像の再アップロードをゼロにし、リセット・画像変更・画面離脱・API キー変更時にはバックグラウンドでベストエフォート削除を行います。
 - **AIチャット機能**: 生成されたテキストに対して、「もっと短くして」「SNSの投稿文にして」など、チャット形式で追加の指示や最新応答の再生成を行えます。
 - **選択可能テキストとワンタップコピー**: チャット本文は選択可能テキスト（`SelectableText`）で表示され、部分選択・コピーと Copy ボタンの両方を利用できます。
 - **カメラ・ライブラリ対応**: Android の標準画像ピッカーとカメラ撮影に対応し、選択画像の全画面プレビューも行えます。
@@ -30,10 +31,14 @@ Android 版は以下の Releases ページから最新の APK ファイルをダ
 ## 特徴
 
 - **Android 専用・軽量設計**: Android（リリースビルドは `arm64-v8a` 単一 ABI）に特化し、R8 によるコード・リソース縮小と Dart デバッグシンボル分離・難読化により APK サイズを抑えています。
+- **不安定な通信環境への高い耐性**:
+  - Google Play Services 版 `cronet_http` により Android ネイティブの HTTP/2・HTTP/3（QUIC）・接続再利用・システムプロキシに対応（非対応端末では永続 `IOClient` に自動フォールバック）
+  - 全 API 操作に 30 秒タイムアウトおよびリセット・画面離脱時の確実な通信中断（`AbortableRequest`）を適用
+  - 一時的な通信断やサーバー混雑（HTTP 429 / 502 / 503 / 504）のみ 30 秒枠内で最大 2 回自動リトライ
+  - 6 区分（タイムアウト / 通信エラー / API キー無効 / サーバー混雑 / 安全性ポリシー / その他）の分かりやすい日本語エラー表示と機密情報マスク済みの技術詳細ラベルを併記
 - **モダンなUI/UX**:
   - 直感的な画像選択（中央エリアのタップからボトムシートで選択）
-  - 生成状況のリアルタイム表示
-  - 30秒のタイムアウト管理による安定した動作
+  - 処理段階（「画像をアップロード中...」→「Altテキストを生成中...」）のリアルタイム表示
   - システムナビゲーションバーを考慮した SafeArea 設計
 
 ## セットアップ
@@ -59,7 +64,8 @@ Android 版は以下の Releases ページから最新の APK ファイルをダ
 
 ## 技術スタック
 - **Framework**: Flutter (Dart) — Android 専用
-- **AI**: Google Generative AI (`google_generative_ai` / Gemini API)
+- **AI**: Google Generative AI (`google_generative_ai` / Gemini API・Gemini Files API)
+- **Networking**: `cronet_http` (Google Play Services 版 Cronet / フォールバック: `IOClient`), `http` (`AbortableRequest` / `RetryClient`)
 - **Storage**: `flutter_secure_storage`
 - **Media**: `image_picker`
 
