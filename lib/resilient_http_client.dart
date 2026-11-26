@@ -107,8 +107,8 @@ bool _shouldRetryError(Object error, StackTrace _) {
 TimeoutAbortingHttpClient createResilientHttpClient({
   required http.Client baseClient,
   RequestCancelHandle? cancelHandle,
+  RequestCancelHandle? deleteCancelHandle,
   Duration timeout = AppConfig.requestTimeout,
-  bool closeInnerOnClose = false,
 }) {
   final retryClient = RetryClient.withDelays(
     baseClient,
@@ -120,9 +120,101 @@ TimeoutAbortingHttpClient createResilientHttpClient({
     retryingInner: retryClient,
     nonRetryingInner: baseClient,
     cancelHandle: cancelHandle,
+    deleteCancelHandle: deleteCancelHandle,
     timeout: timeout,
-    closeInnerOnClose: closeInnerOnClose,
   );
+}
+
+/// Coordinates a shared persistent base [http.Client] and defers closing an
+/// owned base client until tracked background cleanup tasks (such as
+/// fire-and-forget `DELETE` calls) complete or hit a short safety timeout.
+class ManagedHttpClient {
+  static const Duration defaultShutdownTimeout = Duration(seconds: 5);
+
+  final http.Client baseClient;
+  final bool _ownsBaseClient;
+  final Duration _shutdownTimeout;
+  final RequestCancelHandle cleanupCancelHandle = RequestCancelHandle();
+  final Set<Future<void>> _pendingCleanupTasks = <Future<void>>{};
+  bool _disposed = false;
+
+  ManagedHttpClient({
+    http.Client? baseClient,
+    bool? ownsBaseClient,
+    Duration shutdownTimeout = defaultShutdownTimeout,
+  })  : _ownsBaseClient = ownsBaseClient ?? (baseClient == null),
+        baseClient = baseClient ?? createBaseHttpClient(),
+        _shutdownTimeout = shutdownTimeout;
+
+  /// Tracks a background cleanup [task] so [dispose] waits for it before
+  /// closing an owned [baseClient].
+  void trackCleanupTask(Future<void> task) {
+    _pendingCleanupTasks.add(task);
+    unawaited(task.whenComplete(() => _pendingCleanupTasks.remove(task)));
+  }
+
+  /// Releases the owned [baseClient], waiting for any tracked cleanup tasks
+  /// up to [_shutdownTimeout] before aborting stragglers and closing.
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    if (!_ownsBaseClient) return;
+    if (_pendingCleanupTasks.isEmpty) {
+      baseClient.close();
+      return;
+    }
+    final pending = List<Future<void>>.of(_pendingCleanupTasks);
+    unawaited(
+      Future.wait(pending)
+          .timeout(
+            _shutdownTimeout,
+            onTimeout: () {
+              cleanupCancelHandle.cancelActiveRequests();
+              return const <void>[];
+            },
+          )
+          .catchError((_) => const <void>[])
+          .whenComplete(baseClient.close),
+    );
+  }
+}
+
+/// Per-screen lifecycle helper that consolidates [RequestCancelHandle],
+/// [TimeoutAbortingHttpClient], cleanup task tracking, and teardown over a
+/// shared [ManagedHttpClient] (or a local one when mounted standalone).
+class ScopedHttpClient {
+  final ManagedHttpClient _managedClient;
+  final bool _ownsManagedClient;
+  final RequestCancelHandle cancelHandle = RequestCancelHandle();
+  late final TimeoutAbortingHttpClient client;
+
+  ScopedHttpClient({
+    ManagedHttpClient? managedClient,
+    http.Client? httpClient,
+  })  : _ownsManagedClient = managedClient == null,
+        _managedClient =
+            managedClient ?? ManagedHttpClient(baseClient: httpClient) {
+    client = createResilientHttpClient(
+      baseClient: _managedClient.baseClient,
+      cancelHandle: cancelHandle,
+      deleteCancelHandle: _managedClient.cleanupCancelHandle,
+    );
+  }
+
+  int? get lastResponseStatusCode => client.lastResponseStatusCode;
+
+  void cancelActiveRequests() => cancelHandle.cancelActiveRequests();
+
+  void trackCleanupTask(Future<void> task) =>
+      _managedClient.trackCleanupTask(task);
+
+  void dispose() {
+    cancelHandle.cancelActiveRequests();
+    client.close();
+    if (_ownsManagedClient) {
+      _managedClient.dispose();
+    }
+  }
 }
 
 enum _AbortReason { timeout, cancelled }
@@ -135,8 +227,8 @@ class TimeoutAbortingHttpClient extends http.BaseClient {
   final http.Client _retryingInner;
   final http.Client _nonRetryingInner;
   final RequestCancelHandle? _cancelHandle;
+  final RequestCancelHandle? _deleteCancelHandle;
   final Duration _timeout;
-  final bool _closeInnerOnClose;
 
   /// Records the HTTP status code of the most recent non-DELETE response,
   /// cleared at the start of each non-DELETE request. Used to preserve exact
@@ -147,13 +239,13 @@ class TimeoutAbortingHttpClient extends http.BaseClient {
     required http.Client retryingInner,
     required http.Client nonRetryingInner,
     RequestCancelHandle? cancelHandle,
+    RequestCancelHandle? deleteCancelHandle,
     Duration timeout = AppConfig.requestTimeout,
-    bool closeInnerOnClose = false,
   })  : _retryingInner = retryingInner,
         _nonRetryingInner = nonRetryingInner,
         _cancelHandle = cancelHandle,
-        _timeout = timeout,
-        _closeInnerOnClose = closeInnerOnClose;
+        _deleteCancelHandle = deleteCancelHandle,
+        _timeout = timeout;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) {
@@ -173,10 +265,11 @@ class TimeoutAbortingHttpClient extends http.BaseClient {
       }
     }
 
+    final activeCancelHandle = isDelete ? _deleteCancelHandle : _cancelHandle;
     VoidCallback? cancelListener;
-    if (!isDelete && _cancelHandle != null) {
+    if (activeCancelHandle != null) {
       cancelListener = () => triggerAbort(_AbortReason.cancelled);
-      _cancelHandle._addListener(cancelListener);
+      activeCancelHandle._addListener(cancelListener);
     }
 
     if (request case http.Abortable(:final abortTrigger?)) {
@@ -193,7 +286,7 @@ class TimeoutAbortingHttpClient extends http.BaseClient {
       cleanedUp = true;
       timer.cancel();
       if (cancelListener != null) {
-        _cancelHandle?._removeListener(cancelListener);
+        activeCancelHandle?._removeListener(cancelListener);
       }
     }
 
@@ -408,13 +501,6 @@ class TimeoutAbortingHttpClient extends http.BaseClient {
         );
       case _AbortReason.cancelled:
         return RequestCancelledException(url);
-    }
-  }
-
-  @override
-  void close() {
-    if (_closeInnerOnClose) {
-      _retryingInner.close();
     }
   }
 }

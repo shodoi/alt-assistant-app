@@ -119,28 +119,25 @@ class GeminiFilesClient {
     );
   }
 
-  /// Sends a best-effort `DELETE` request to remove a previously uploaded file.
+  /// Sends a best-effort `DELETE` request to remove a previously uploaded [file].
   ///
   /// Never throws; failures are logged with secrets masked and ignored so UI
   /// flows remain unblocked (Gemini auto-deletes files after 48 hours).
-  Future<void> deleteFileBestEffort({
-    required String fileName,
-    required String apiKey,
-  }) async {
+  Future<void> deleteFileBestEffort(UploadedGeminiFile file) async {
     try {
       final normalized =
-          fileName.startsWith('/') ? fileName.substring(1) : fileName;
+          file.name.startsWith('/') ? file.name.substring(1) : file.name;
       final uri = Uri.https(_host, '/v1beta/$normalized');
       await _httpClient.delete(
         uri,
         headers: <String, String>{
-          'x-goog-api-key': apiKey,
+          'x-goog-api-key': file.apiKey,
         },
       );
     } catch (e) {
       debugPrint(
         'Best-effort Gemini file delete failed (ignored): '
-        '${maskSecrets(e.toString(), secretApiKey: apiKey)}',
+        '${maskSecrets(e.toString(), secretApiKey: file.apiKey)}',
       );
     }
   }

@@ -48,8 +48,57 @@ final RegExp _headerSecretPattern = RegExp(
   r'((?:x-goog-api-key|authorization)\s*[:=]\s*(?:Bearer\s+)?)[^\s,\}\]"' "'" r']+',
   caseSensitive: false,
 );
-final RegExp _serverErrorStatusPattern = RegExp(r'Server Error \[(\d{3})\]');
-final RegExp _httpStatusCodePattern = RegExp(r'\b(401|403|429|5\d\d)\b');
+final RegExp _structuredHttpStatusPattern = RegExp(
+  r'Server Error \[(\d{3})\]|\bHTTP\s+(\d{3})\b|\bstatus(?:\s+code)?(?:\s*[:=]\s*|\s+)(\d{3})\b',
+  caseSensitive: false,
+);
+
+String _userMessageFor(ErrorCategory category) => switch (category) {
+      ErrorCategory.timeout => '通信がタイムアウトしました。電波の良い場所で再試行してください。',
+      ErrorCategory.network => '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
+      ErrorCategory.invalidApiKey =>
+        'APIキーが無効または権限がありません。設定画面でAPIキーを確認してください。',
+      ErrorCategory.serverTemporary =>
+        'サーバーが混雑しているか一時的なエラーが発生しました。しばらく待ってから再試行してください。',
+      ErrorCategory.safety => '安全性ポリシーによりこのコンテンツは処理できませんでした。',
+      ErrorCategory.other => '予期しないエラーが発生しました。時間をおいて再試行してください。',
+    };
+
+ClassifiedError _classified(ErrorCategory category, String detailLabel) =>
+    ClassifiedError(
+      category: category,
+      userMessage: _userMessageFor(category),
+      detailLabel: detailLabel,
+    );
+
+bool _isAuthStatus(int code) => code == 401 || code == 403;
+
+bool _isTemporaryServerStatus(int code) =>
+    code == 429 || (code >= 500 && code <= 599);
+
+String? _networkDetailLabel(Object error) {
+  if (error is SocketException) return 'SocketException';
+  if (error is HandshakeException) return 'HandshakeException';
+  if (error is TlsException) return 'TlsException';
+  if (error is HttpException) return 'HttpException';
+  if (error is QuicException) return 'QuicException';
+  if (error is NetworkException) return 'NetworkException';
+  if (error is CronetException) return 'CronetException';
+  if (error is http.ClientException) return 'ClientException';
+  return null;
+}
+
+List<int> _extractStructuredStatusCodes(String rawMessage) {
+  final codes = <int>[];
+  for (final match in _structuredHttpStatusPattern.allMatches(rawMessage)) {
+    final token = match.group(1) ?? match.group(2) ?? match.group(3);
+    final parsed = token == null ? null : int.tryParse(token);
+    if (parsed != null) {
+      codes.add(parsed);
+    }
+  }
+  return codes;
+}
 
 /// Masks API keys, auth headers, and secret query parameters from [input].
 String maskSecrets(String input, {String? secretApiKey}) {
@@ -99,98 +148,34 @@ ClassifiedError _classifyRaw(Object error, int? statusCode) {
   // 1. Timeout
   if (error is TimeoutException) {
     final seconds = error.duration?.inSeconds ?? AppConfig.timeoutSeconds;
-    return ClassifiedError(
-      category: ErrorCategory.timeout,
-      userMessage: '通信がタイムアウトしました。電波の良い場所で再試行してください。',
-      detailLabel: 'Timeout ${seconds}s',
-    );
+    return _classified(ErrorCategory.timeout, 'Timeout ${seconds}s');
   }
 
   // 2. Network / connection errors (checked before HTTP status so transport
   //    failures after an earlier HTTP status are classified as network errors)
-  if (error is SocketException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'SocketException',
-    );
-  }
-  if (error is HandshakeException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'HandshakeException',
-    );
-  }
-  if (error is TlsException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'TlsException',
-    );
-  }
-  if (error is HttpException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'HttpException',
-    );
-  }
-  if (error is QuicException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'QuicException',
-    );
-  }
-  if (error is NetworkException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'NetworkException',
-    );
-  }
-  if (error is CronetException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'CronetException',
-    );
-  }
-  if (error is http.ClientException) {
-    return const ClassifiedError(
-      category: ErrorCategory.network,
-      userMessage: '通信エラーが発生しました。ネットワーク接続を確認して再試行してください。',
-      detailLabel: 'ClientException',
-    );
+  final networkLabel = _networkDetailLabel(error);
+  if (networkLabel != null) {
+    return _classified(ErrorCategory.network, networkLabel);
   }
 
   final rawMessage = error.toString();
   final lower = rawMessage.toLowerCase();
 
-  // 3. Safety policy
-  if (lower.contains('safety')) {
-    return const ClassifiedError(
-      category: ErrorCategory.safety,
-      userMessage: '安全性ポリシーによりこのコンテンツは処理できませんでした。',
-      detailLabel: 'SAFETY',
-    );
-  }
+  // When an explicit status code is known, trust it directly without falling
+  // through to regex extraction from body text.
+  final statusCodes = statusCode != null
+      ? <int>[statusCode]
+      : _extractStructuredStatusCodes(rawMessage);
 
-  // 4. Invalid API key / authentication error
+  // 3. Invalid API key / authentication error (evaluated before safety so
+  //    auth failures mentioning "safety" are never misclassified as safety).
   if (error is InvalidApiKey) {
-    return const ClassifiedError(
-      category: ErrorCategory.invalidApiKey,
-      userMessage: 'APIキーが無効または権限がありません。設定画面でAPIキーを確認してください。',
-      detailLabel: 'InvalidApiKey',
-    );
+    return _classified(ErrorCategory.invalidApiKey, 'InvalidApiKey');
   }
-  if (statusCode == 401 || statusCode == 403) {
-    return ClassifiedError(
-      category: ErrorCategory.invalidApiKey,
-      userMessage: 'APIキーが無効または権限がありません。設定画面でAPIキーを確認してください。',
-      detailLabel: 'HTTP $statusCode',
-    );
+  for (final code in statusCodes) {
+    if (_isAuthStatus(code)) {
+      return _classified(ErrorCategory.invalidApiKey, 'HTTP $code');
+    }
   }
   if (lower.contains('api_key_invalid') ||
       lower.contains('api key not valid') ||
@@ -198,72 +183,37 @@ ClassifiedError _classifyRaw(Object error, int? statusCode) {
       lower.contains('permission_denied') ||
       lower.contains('unauthenticated') ||
       lower.contains('invalid authentication')) {
-    return const ClassifiedError(
-      category: ErrorCategory.invalidApiKey,
-      userMessage: 'APIキーが無効または権限がありません。設定画面でAPIキーを確認してください。',
-      detailLabel: 'InvalidApiKey',
-    );
+    return _classified(ErrorCategory.invalidApiKey, 'InvalidApiKey');
+  }
+
+  // 4. Safety policy
+  if (lower.contains('safety')) {
+    return _classified(ErrorCategory.safety, 'SAFETY');
   }
 
   // 5. Server busy / temporary error (HTTP 429 / 5xx)
-  final extractedCode = _extractServerStatusCode(rawMessage, statusCode);
-  if (extractedCode != null &&
-      (extractedCode == 429 ||
-          (extractedCode >= 500 && extractedCode <= 599))) {
-    return ClassifiedError(
-      category: ErrorCategory.serverTemporary,
-      userMessage: 'サーバーが混雑しているか一時的なエラーが発生しました。しばらく待ってから再試行してください。',
-      detailLabel: 'HTTP $extractedCode',
-    );
+  for (final code in statusCodes) {
+    if (_isTemporaryServerStatus(code)) {
+      return _classified(ErrorCategory.serverTemporary, 'HTTP $code');
+    }
   }
-  if (lower.contains('resource has been exhausted') ||
-      lower.contains('resource_exhausted') ||
-      lower.contains('rate limit') ||
-      lower.contains('too many requests') ||
-      lower.contains('quota')) {
-    return const ClassifiedError(
-      category: ErrorCategory.serverTemporary,
-      userMessage: 'サーバーが混雑しているか一時的なエラーが発生しました。しばらく待ってから再試行してください。',
-      detailLabel: 'HTTP 429',
-    );
-  }
-  if (lower.contains('service unavailable') ||
-      lower.contains('overloaded') ||
-      lower.contains('internal error')) {
-    return const ClassifiedError(
-      category: ErrorCategory.serverTemporary,
-      userMessage: 'サーバーが混雑しているか一時的なエラーが発生しました。しばらく待ってから再試行してください。',
-      detailLabel: 'ServerError',
-    );
+  if (statusCode == null) {
+    if (lower.contains('resource has been exhausted') ||
+        lower.contains('resource_exhausted') ||
+        lower.contains('rate limit') ||
+        lower.contains('too many requests') ||
+        lower.contains('quota')) {
+      return _classified(ErrorCategory.serverTemporary, 'HTTP 429');
+    }
+    if (lower.contains('service unavailable') ||
+        lower.contains('overloaded') ||
+        lower.contains('internal error')) {
+      return _classified(ErrorCategory.serverTemporary, 'ServerError');
+    }
   }
 
   // 6. Other unexpected errors (explicit labels safe under --obfuscate)
-  final otherLabel = _otherDetailLabel(error, statusCode);
-  return ClassifiedError(
-    category: ErrorCategory.other,
-    userMessage: '予期しないエラーが発生しました。時間をおいて再試行してください。',
-    detailLabel: otherLabel,
-  );
-}
-
-int? _extractServerStatusCode(String rawMessage, int? explicitStatusCode) {
-  if (explicitStatusCode != null &&
-      (explicitStatusCode == 429 ||
-          (explicitStatusCode >= 500 && explicitStatusCode <= 599))) {
-    return explicitStatusCode;
-  }
-  final serverMatch = _serverErrorStatusPattern.firstMatch(rawMessage);
-  if (serverMatch != null) {
-    return int.tryParse(serverMatch.group(1)!);
-  }
-  final genericMatch = _httpStatusCodePattern.firstMatch(rawMessage);
-  if (genericMatch != null) {
-    final parsed = int.tryParse(genericMatch.group(1)!);
-    if (parsed == 429 || (parsed != null && parsed >= 500 && parsed <= 599)) {
-      return parsed;
-    }
-  }
-  return null;
+  return _classified(ErrorCategory.other, _otherDetailLabel(error, statusCode));
 }
 
 String _otherDetailLabel(Object error, int? statusCode) {

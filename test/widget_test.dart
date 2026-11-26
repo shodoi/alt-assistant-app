@@ -12,6 +12,8 @@ import 'package:image_picker/image_picker.dart';
 
 import 'package:my_alt_generator/main.dart';
 
+import 'test_helpers.dart';
+
 const List<int> _transparent1x1Png = <int>[
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
   0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0,
@@ -50,6 +52,31 @@ const List<int> _minimalJpeg = <int>[
   0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01,
   0x00, 0x00, 0x3F, 0x00, 0xFB, 0xD5, 0xDB, 0x20, 0xA8, 0xF1, 0x45, 0x00,
   0x14, 0x50, 0x01, 0x45, 0x00, 0xFF, 0xD9,
+];
+
+// Minimal valid 1x1 WebP (RIFF...WEBP VP8L) bytes.
+const List<int> _minimalWebp = <int>[
+  0x52, 0x49, 0x46, 0x46, 0x1E, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+  0x56, 0x50, 0x38, 0x4C, 0x11, 0x00, 0x00, 0x00, 0x2F, 0x00, 0x00, 0x00,
+  0x00, 0x07, 0xD0, 0xFF, 0xFE, 0xF7, 0xBF, 0xFF, 0x81, 0x88, 0xE8, 0x7F,
+  0x00, 0x00,
+];
+
+// Minimal valid 1x1 GIF89a bytes.
+const List<int> _minimalGif = <int>[
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x21, 0xF9, 0x04, 0x01, 0x00,
+  0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+  0x00, 0x02, 0x01, 0x44, 0x00, 0x3B,
+];
+
+// Minimal valid 1x1 BMP bytes (unrecognized by detectImageMimeType -> fallback image/jpeg).
+const List<int> _minimalUnknownBmp = <int>[
+  0x42, 0x4D, 0x3A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00,
+  0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+  0x00, 0x00, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00,
 ];
 
 File _createTempSampleImage({
@@ -182,44 +209,6 @@ Future<void> _pumpHomeWithSelectedImage(
   await tester.pumpWidget(AltTextGeneratorApp(httpClient: httpClient));
   await tester.pumpAndSettle();
   await _selectTestImage(tester, bytes: imageBytes, filename: filename);
-}
-
-/// Transport mock that observes [http.Abortable.abortTrigger] on every request.
-class _AbortAwareMockClient extends http.BaseClient {
-  final Future<http.StreamedResponse> Function(
-    http.BaseRequest request,
-    List<int> bodyBytes,
-    Future<void>? abortTrigger,
-  ) _handler;
-
-  final List<http.BaseRequest> requests = [];
-  final List<bool> abortedFlags = [];
-
-  _AbortAwareMockClient(this._handler);
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    requests.add(request);
-    final trigger = request is http.Abortable ? request.abortTrigger : null;
-    final idx = abortedFlags.length;
-    abortedFlags.add(false);
-    if (trigger != null) {
-      unawaited(trigger.whenComplete(() {
-        abortedFlags[idx] = true;
-      }));
-    }
-    final bytes = await request.finalize().toBytes();
-    return _handler(request, bytes, trigger);
-  }
-}
-
-http.StreamedResponse _toStreamedResponse(http.Response response) {
-  return http.StreamedResponse(
-    http.ByteStream.fromBytes(response.bodyBytes),
-    response.statusCode,
-    contentLength: response.contentLength,
-    headers: response.headers,
-  );
 }
 
 void main() {
@@ -643,16 +632,16 @@ void main() {
       '30s timeout aborts underlying request via abortTrigger and immediately releases ChatSession mutex for next follow-up',
       (WidgetTester tester) async {
     var generateCallCount = 0;
-    late _AbortAwareMockClient transport;
-    transport = _AbortAwareMockClient((request, bytes, abortTrigger) {
+    late AbortObservingHttpClient transport;
+    transport = AbortObservingHttpClient((request, bytes, abortTrigger) {
       if (_isUploadRequest(request)) {
-        return Future.value(_toStreamedResponse(_filesUploadSuccessResponse()));
+        return Future.value(toStreamedResponse(_filesUploadSuccessResponse()));
       }
       if (_isGenerateRequest(request)) {
         generateCallCount++;
         if (generateCallCount == 1) {
           return Future.value(
-            _toStreamedResponse(_geminiSuccessResponse('初回Alt')),
+            toStreamedResponse(_geminiSuccessResponse('初回Alt')),
           );
         }
         if (generateCallCount == 2) {
@@ -667,10 +656,10 @@ void main() {
         }
         // Immediate follow-up retry succeeds
         return Future.value(
-          _toStreamedResponse(_geminiSuccessResponse('タイムアウト後の再試行成功')),
+          toStreamedResponse(_geminiSuccessResponse('タイムアウト後の再試行成功')),
         );
       }
-      return Future.value(_toStreamedResponse(http.Response('{}', 200)));
+      return Future.value(toStreamedResponse(http.Response('{}', 200)));
     });
 
     await _pumpHomeWithSelectedImage(tester, httpClient: transport);
@@ -684,13 +673,13 @@ void main() {
     await tester.pump();
 
     final hangingIndex = transport.requests.length - 1;
-    expect(transport.abortedFlags[hangingIndex], isFalse);
+    expect(transport.abortCompletedFlags[hangingIndex], isFalse);
 
     // Advance FakeAsync by 30s -> abortTrigger completes and timeout error shows
     await tester.pump(const Duration(seconds: 30));
     await tester.pumpAndSettle();
 
-    expect(transport.abortedFlags[hangingIndex], isTrue);
+    expect(transport.abortCompletedFlags[hangingIndex], isTrue);
     expect(find.textContaining('タイムアウト'), findsOneWidget);
     expect(find.textContaining('（詳細: Timeout 30s）'), findsOneWidget);
 
@@ -705,8 +694,8 @@ void main() {
   testWidgets(
       'Reset button aborts in-flight request via abortTrigger without adding an error message',
       (WidgetTester tester) async {
-    late _AbortAwareMockClient transport;
-    transport = _AbortAwareMockClient((request, bytes, abortTrigger) {
+    late AbortObservingHttpClient transport;
+    transport = AbortObservingHttpClient((request, bytes, abortTrigger) {
       final completer = Completer<http.StreamedResponse>();
       abortTrigger?.whenComplete(() {
         if (!completer.isCompleted) {
@@ -722,12 +711,12 @@ void main() {
     await tester.pump();
 
     expect(transport.requests, hasLength(1));
-    expect(transport.abortedFlags.single, isFalse);
+    expect(transport.abortCompletedFlags.single, isFalse);
 
     await tester.tap(find.byTooltip('リセット'));
     await tester.pumpAndSettle();
 
-    expect(transport.abortedFlags.single, isTrue);
+    expect(transport.abortCompletedFlags.single, isTrue);
     expect(find.text('タップして画像を選択'), findsOneWidget);
     expect(find.textContaining('エラー'), findsNothing);
     expect(find.textContaining('タイムアウト'), findsNothing);
@@ -737,7 +726,7 @@ void main() {
       'SettingsPage API key verification times out and aborts at 30s',
       (WidgetTester tester) async {
     _setMockStorage(const {});
-    final transport = _AbortAwareMockClient((request, bytes, abortTrigger) {
+    final transport = AbortObservingHttpClient((request, bytes, abortTrigger) {
       final completer = Completer<http.StreamedResponse>();
       abortTrigger?.whenComplete(() {
         if (!completer.isCompleted) {
@@ -761,7 +750,7 @@ void main() {
     await tester.pump(const Duration(seconds: 30));
     await tester.pumpAndSettle();
 
-    expect(transport.abortedFlags.single, isTrue);
+    expect(transport.abortCompletedFlags.single, isTrue);
     expect(find.text('Save API Key'), findsOneWidget);
     expect(find.textContaining('（詳細: Timeout 30s）'), findsOneWidget);
   });
@@ -1069,5 +1058,427 @@ void main() {
 
     expect(copiedText, '青い空の画像');
     expect(find.text('Copied to clipboard'), findsOneWidget);
+  });
+
+  testWidgets(
+      'HomePage blocks follow-up chat before initial Alt generation has occurred',
+      (WidgetTester tester) async {
+    final requests = <http.Request>[];
+    final mockClient = MockClient((request) async {
+      requests.add(request);
+      return _geminiSuccessResponse('should not run');
+    });
+
+    await _pumpHomeWithSelectedImage(tester, httpClient: mockClient);
+
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    final sendButton = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.send),
+    );
+    expect(textField.enabled, isFalse);
+    expect(sendButton.onPressed, isNull);
+
+    // Even if text is entered programmatically or tapped, no request is sent.
+    textField.controller?.text = '事前のチャット';
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pumpAndSettle();
+
+    expect(requests, isEmpty);
+    expect(find.widgetWithText(SelectableText, '事前のチャット'), findsNothing);
+    expect(find.text('Altテキストを生成'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Reset during storage read in _generateAltText does not leave _isLoading stuck',
+      (WidgetTester tester) async {
+    final requests = <http.Request>[];
+    final mockClient = MockClient((request) async {
+      requests.add(request);
+      return _geminiSuccessResponse('should not run');
+    });
+
+    await _pumpHomeWithSelectedImage(tester, httpClient: mockClient);
+
+    // Invoke generate and reset synchronously back-to-back so reset runs while
+    // _generateAltText is suspended at await _secureStorage.read(...).
+    final generateButton = tester.widget<ButtonStyleButton>(
+      find.ancestor(
+        of: find.text('Altテキストを生成'),
+        matching: find.bySubtype<ButtonStyleButton>(),
+      ),
+    );
+    final resetButton = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.refresh),
+    );
+    generateButton.onPressed!();
+    resetButton.onPressed!();
+
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    expect(requests, isEmpty);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.text('タップして画像を選択'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Concurrent _sendMessage calls and reset during storage read are handled safely',
+      (WidgetTester tester) async {
+    final generateCompleters = <Completer<http.Response>>[];
+    var generateCount = 0;
+
+    final mockClient = MockClient((request) {
+      if (_isUploadRequest(request)) {
+        return Future.value(_filesUploadSuccessResponse());
+      }
+      if (_isDeleteRequest(request)) {
+        return Future.value(http.Response('{}', 200));
+      }
+      generateCount++;
+      if (generateCount == 1) {
+        return Future.value(_geminiSuccessResponse('初回Alt'));
+      }
+      final completer = Completer<http.Response>();
+      generateCompleters.add(completer);
+      return completer.future;
+    });
+
+    await _pumpHomeWithSelectedImage(tester, httpClient: mockClient);
+    await tester.tap(find.text('Altテキストを生成'));
+    await tester.pumpAndSettle();
+
+    // 1. Rapid double-invocation before storage read resolves sends only once.
+    await tester.enterText(find.byType(TextField), '1つ目の指示');
+    final sendButton = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.send),
+    );
+    sendButton.onPressed!();
+    sendButton.onPressed!();
+    await tester.pump();
+    await tester.pump();
+
+    expect(generateCompleters, hasLength(1));
+    expect(find.widgetWithText(SelectableText, '1つ目の指示'), findsOneWidget);
+
+    // 2. While loading, TextField and Send button are disabled.
+    final disabledField = tester.widget<TextField>(find.byType(TextField));
+    final disabledSend = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.send),
+    );
+    expect(disabledField.enabled, isFalse);
+    expect(disabledSend.onPressed, isNull);
+
+    generateCompleters.single.complete(_geminiSuccessResponse('1つ目の回答'));
+    await tester.pumpAndSettle();
+    expect(find.text('1つ目の回答'), findsOneWidget);
+
+    // 3. Reset during storage read in _sendMessage does not leave loading stuck.
+    await tester.enterText(find.byType(TextField), 'キャンセルされる指示');
+    final activeSend = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.send),
+    );
+    final resetButton = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.refresh),
+    );
+    activeSend.onPressed!();
+    resetButton.onPressed!();
+    await tester.pumpAndSettle();
+
+    expect(generateCompleters, hasLength(1));
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.text('タップして画像を選択'), findsOneWidget);
+  });
+
+  testWidgets(
+      'AltTextGeneratorApp waits for pending DELETE to complete before closing its owned base client on dispose',
+      (WidgetTester tester) async {
+    final deleteCompleter = Completer<http.StreamedResponse>();
+    var deleteAbortedByClose = false;
+    late AbortObservingHttpClient ownedTransport;
+    ownedTransport = AbortObservingHttpClient((request, bytes, abortTrigger) {
+      if (_isUploadRequest(request)) {
+        return Future.value(
+          toStreamedResponse(_filesUploadSuccessResponse(name: 'files/owned-1')),
+        );
+      }
+      if (_isGenerateRequest(request)) {
+        return Future.value(toStreamedResponse(_geminiSuccessResponse('Alt結果')));
+      }
+      if (_isDeleteRequest(request)) {
+        unawaited(ownedTransport.onClosed.whenComplete(() {
+          if (!deleteCompleter.isCompleted) {
+            deleteAbortedByClose = true;
+            deleteCompleter.completeError(
+              http.ClientException('Base client closed prematurely', request.url),
+            );
+          }
+        }));
+        abortTrigger?.whenComplete(() {
+          if (!deleteCompleter.isCompleted) {
+            deleteCompleter.completeError(
+              http.RequestAbortedException(request.url),
+            );
+          }
+        });
+        return deleteCompleter.future;
+      }
+      return Future.value(toStreamedResponse(http.Response('{}', 200)));
+    });
+
+    _setMockStorage();
+    await tester.pumpWidget(
+      AltTextGeneratorApp(baseClientFactory: () => ownedTransport),
+    );
+    await tester.pumpAndSettle();
+
+    await _selectTestImage(tester);
+    await tester.tap(find.text('Altテキストを生成'));
+    await tester.pumpAndSettle();
+
+    // Dispose the entire app (HomePage disposes first, then AltTextGeneratorApp).
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+
+    final deleteRequests = ownedTransport.requests.where(_isDeleteRequest).toList();
+    expect(deleteRequests, hasLength(1));
+    expect(deleteRequests.single.url.path, '/v1beta/files/owned-1');
+    expect(deleteAbortedByClose, isFalse);
+    expect(ownedTransport.isClosed, isFalse);
+
+    // Complete DELETE -> owned base client closes cleanly afterwards.
+    deleteCompleter.complete(toStreamedResponse(http.Response('{}', 200)));
+    await tester.pump();
+
+    expect(deleteAbortedByClose, isFalse);
+    expect(ownedTransport.isClosed, isTrue);
+  });
+
+  testWidgets(
+      'AltTextGeneratorApp safety timeout aborts hanging DELETE and closes owned base client on dispose',
+      (WidgetTester tester) async {
+    final deleteCompleter = Completer<http.StreamedResponse>();
+    final ownedTransport = AbortObservingHttpClient((request, bytes, abortTrigger) {
+      if (_isUploadRequest(request)) {
+        return Future.value(
+          toStreamedResponse(_filesUploadSuccessResponse(name: 'files/owned-hang')),
+        );
+      }
+      if (_isGenerateRequest(request)) {
+        return Future.value(toStreamedResponse(_geminiSuccessResponse('Alt結果')));
+      }
+      if (_isDeleteRequest(request)) {
+        abortTrigger?.whenComplete(() {
+          if (!deleteCompleter.isCompleted) {
+            deleteCompleter.completeError(
+              http.RequestAbortedException(request.url),
+            );
+          }
+        });
+        return deleteCompleter.future;
+      }
+      return Future.value(toStreamedResponse(http.Response('{}', 200)));
+    });
+
+    _setMockStorage();
+    await tester.pumpWidget(
+      AltTextGeneratorApp(baseClientFactory: () => ownedTransport),
+    );
+    await tester.pumpAndSettle();
+
+    await _selectTestImage(tester);
+    await tester.tap(find.text('Altテキストを生成'));
+    await tester.pumpAndSettle();
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 4));
+    expect(ownedTransport.isClosed, isFalse);
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(ownedTransport.isClosed, isTrue);
+    expect(ownedTransport.abortCompletedFlags.last, isTrue);
+  });
+
+  testWidgets(
+      'HomePage sends expected Content-Type for WebP, GIF, and unknown-bytes fallback to Files API',
+      (WidgetTester tester) async {
+    final cases = <({
+      String label,
+      List<int> bytes,
+      String filename,
+      String expectedMime,
+    })>[
+      (
+        label: 'WebP',
+        bytes: _minimalWebp,
+        filename: 'sample.webp',
+        expectedMime: 'image/webp',
+      ),
+      (
+        label: 'GIF',
+        bytes: _minimalGif,
+        filename: 'sample.gif',
+        expectedMime: 'image/gif',
+      ),
+      (
+        label: 'unknown bytes fallback',
+        bytes: _minimalUnknownBmp,
+        filename: 'sample.bmp',
+        expectedMime: 'image/jpeg',
+      ),
+    ];
+
+    for (final testCase in cases) {
+      http.Request? uploadReq;
+      final mockClient = MockClient((request) async {
+        if (_isUploadRequest(request)) {
+          uploadReq = request;
+          return _filesUploadSuccessResponse(mimeType: testCase.expectedMime);
+        }
+        if (_isDeleteRequest(request)) {
+          return http.Response('{}', 200);
+        }
+        return _geminiSuccessResponse('${testCase.label}の説明');
+      });
+
+      await _pumpHomeWithSelectedImage(
+        tester,
+        httpClient: mockClient,
+        imageBytes: testCase.bytes,
+        filename: testCase.filename,
+      );
+      await tester.tap(find.text('Altテキストを生成'));
+      await tester.pumpAndSettle();
+
+      expect(uploadReq, isNotNull, reason: testCase.label);
+      expect(
+        uploadReq!.headers['content-type'],
+        testCase.expectedMime,
+        reason: testCase.label,
+      );
+      expect(uploadReq!.bodyBytes, testCase.bytes, reason: testCase.label);
+      expect(find.text('${testCase.label}の説明'), findsOneWidget);
+
+      // Unmount before next iteration so state starts completely clean.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    }
+  });
+
+  testWidgets(
+      'Picking a new image while loading aborts the in-flight request via abortTrigger',
+      (WidgetTester tester) async {
+    final transport = AbortObservingHttpClient((request, bytes, abortTrigger) {
+      final completer = Completer<http.StreamedResponse>();
+      abortTrigger?.whenComplete(() {
+        if (!completer.isCompleted) {
+          completer.completeError(http.RequestAbortedException(request.url));
+        }
+      });
+      return completer.future;
+    });
+
+    await _pumpHomeWithSelectedImage(tester, httpClient: transport);
+    await tester.tap(find.text('Altテキストを生成'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(transport.requests, hasLength(1));
+    expect(transport.abortCompletedFlags.single, isFalse);
+
+    // Pick a new image while loading (use fixed pumps because LinearProgressIndicator animates).
+    final newFile = _createTempSampleImage(
+      bytes: _minimalJpeg,
+      filename: 'replacement.jpg',
+    );
+    _mockImagePickerChannel(newFile);
+
+    await tester.tap(find.byIcon(Icons.add_photo_alternate));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('ライブラリから選択'));
+    await tester.pump();
+    for (int i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+
+    expect(transport.abortCompletedFlags.single, isTrue);
+    expect(find.text('Altテキストを生成'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.textContaining('エラー'), findsNothing);
+    expect(find.textContaining('タイムアウト'), findsNothing);
+  });
+
+  testWidgets(
+      'Disposing HomePage while loading aborts the in-flight request via abortTrigger',
+      (WidgetTester tester) async {
+    final transport = AbortObservingHttpClient((request, bytes, abortTrigger) {
+      final completer = Completer<http.StreamedResponse>();
+      abortTrigger?.whenComplete(() {
+        if (!completer.isCompleted) {
+          completer.completeError(http.RequestAbortedException(request.url));
+        }
+      });
+      return completer.future;
+    });
+
+    await _pumpHomeWithSelectedImage(tester, httpClient: transport);
+    await tester.tap(find.text('Altテキストを生成'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(transport.requests, hasLength(1));
+    expect(transport.abortCompletedFlags.single, isFalse);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+
+    expect(transport.abortCompletedFlags.single, isTrue);
+  });
+
+  testWidgets(
+      'Disposing SettingsPage while verifying API key aborts the in-flight request via abortTrigger',
+      (WidgetTester tester) async {
+    _setMockStorage();
+    final transport = AbortObservingHttpClient((request, bytes, abortTrigger) {
+      final completer = Completer<http.StreamedResponse>();
+      abortTrigger?.whenComplete(() {
+        if (!completer.isCompleted) {
+          completer.completeError(http.RequestAbortedException(request.url));
+        }
+      });
+      return completer.future;
+    });
+
+    await tester.pumpWidget(AltTextGeneratorApp(httpClient: transport));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('設定'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Gemini API Key'),
+      'key-being-verified',
+    );
+    await tester.tap(find.text('Save API Key'));
+    await tester.pump();
+
+    expect(find.text('検証中...'), findsOneWidget);
+    expect(transport.requests, hasLength(1));
+    expect(transport.abortCompletedFlags.single, isFalse);
+
+    // Navigate back (disposes SettingsPage) while verification request is in-flight.
+    await tester.pageBack();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+
+    expect(transport.abortCompletedFlags.single, isTrue);
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.text('Alt 生成くん'), findsOneWidget);
   });
 }

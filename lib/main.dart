@@ -35,36 +35,59 @@ GenerativeModel _createGenerativeModel({
 class AltTextGeneratorApp extends StatefulWidget {
   final http.Client? httpClient;
 
-  const AltTextGeneratorApp({super.key, this.httpClient});
+  @visibleForTesting
+  final http.Client Function()? baseClientFactory;
+
+  const AltTextGeneratorApp({
+    super.key,
+    this.httpClient,
+    @visibleForTesting this.baseClientFactory,
+  });
 
   @override
   State<AltTextGeneratorApp> createState() => _AltTextGeneratorAppState();
 }
 
 class _AltTextGeneratorAppState extends State<AltTextGeneratorApp> {
-  http.Client? _ownedBaseClient;
+  late ManagedHttpClient _managedClient;
 
-  http.Client get _sharedBaseClient =>
-      widget.httpClient ?? (_ownedBaseClient ??= createBaseHttpClient());
+  @override
+  void initState() {
+    super.initState();
+    _managedClient = _createManagedClient();
+  }
+
+  ManagedHttpClient _createManagedClient() {
+    if (widget.httpClient != null) {
+      return ManagedHttpClient(
+        baseClient: widget.httpClient,
+        ownsBaseClient: false,
+      );
+    }
+    return ManagedHttpClient(
+      baseClient: (widget.baseClientFactory ?? createBaseHttpClient)(),
+      ownsBaseClient: true,
+    );
+  }
 
   @override
   void didUpdateWidget(covariant AltTextGeneratorApp oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.httpClient == null && widget.httpClient != null) {
-      _ownedBaseClient?.close();
-      _ownedBaseClient = null;
+    if (oldWidget.httpClient != widget.httpClient ||
+        oldWidget.baseClientFactory != widget.baseClientFactory) {
+      _managedClient.dispose();
+      _managedClient = _createManagedClient();
     }
   }
 
   @override
   void dispose() {
-    _ownedBaseClient?.close();
+    _managedClient.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final baseClient = _sharedBaseClient;
     return MaterialApp(
       title: 'Alt 生成くん',
       theme: ThemeData(
@@ -73,8 +96,9 @@ class _AltTextGeneratorAppState extends State<AltTextGeneratorApp> {
       ),
       initialRoute: '/',
       routes: {
-        '/': (context) => HomePage(httpClient: baseClient),
-        '/settings': (context) => SettingsPage(httpClient: baseClient),
+        '/': (context) => HomePage(managedHttpClient: _managedClient),
+        '/settings': (context) =>
+            SettingsPage(managedHttpClient: _managedClient),
       },
     );
   }
@@ -84,8 +108,13 @@ class _AltTextGeneratorAppState extends State<AltTextGeneratorApp> {
 
 class SettingsPage extends StatefulWidget {
   final http.Client? httpClient;
+  final ManagedHttpClient? managedHttpClient;
 
-  const SettingsPage({super.key, this.httpClient});
+  const SettingsPage({
+    super.key,
+    this.httpClient,
+    this.managedHttpClient,
+  });
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -94,11 +123,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _apiKeyController = TextEditingController();
   final _promptController = TextEditingController();
-  final _cancelHandle = RequestCancelHandle();
-
-  late final http.Client _baseClient;
-  late final bool _ownsBaseClient;
-  late final TimeoutAbortingHttpClient _resilientClient;
+  late final ScopedHttpClient _http;
 
   static const _apiKeyKey = 'gemini_api_key';
   static const _customPromptKey = 'custom_initial_prompt';
@@ -108,11 +133,9 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
-    _ownsBaseClient = widget.httpClient == null;
-    _baseClient = widget.httpClient ?? createBaseHttpClient();
-    _resilientClient = createResilientHttpClient(
-      baseClient: _baseClient,
-      cancelHandle: _cancelHandle,
+    _http = ScopedHttpClient(
+      managedClient: widget.managedHttpClient,
+      httpClient: widget.httpClient,
     );
     _loadSettings();
   }
@@ -149,7 +172,7 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final model = _createGenerativeModel(
         apiKey: newKey,
-        httpClient: _resilientClient,
+        httpClient: _http.client,
       );
       await model.generateContent([Content.text('test')]);
 
@@ -174,7 +197,7 @@ class _SettingsPageState extends State<SettingsPage> {
       final classified = classifyError(
         e,
         secretApiKey: newKey,
-        httpStatusCode: _resilientClient.lastResponseStatusCode,
+        httpStatusCode: _http.lastResponseStatusCode,
       );
       debugPrint(
         'Error verifying API key: '
@@ -199,11 +222,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
-    _cancelHandle.cancelActiveRequests();
-    _resilientClient.close();
-    if (_ownsBaseClient) {
-      _baseClient.close();
-    }
+    _http.dispose();
     _apiKeyController.dispose();
     _promptController.dispose();
     super.dispose();
@@ -511,8 +530,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
 class HomePage extends StatefulWidget {
   final http.Client? httpClient;
+  final ManagedHttpClient? managedHttpClient;
 
-  const HomePage({super.key, this.httpClient});
+  const HomePage({
+    super.key,
+    this.httpClient,
+    this.managedHttpClient,
+  });
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -522,11 +546,8 @@ class _HomePageState extends State<HomePage> {
   final _picker = ImagePicker();
   final _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final _cancelHandle = RequestCancelHandle();
 
-  late final http.Client _baseClient;
-  late final bool _ownsBaseClient;
-  late final TimeoutAbortingHttpClient _resilientClient;
+  late final ScopedHttpClient _http;
   late final GeminiFilesClient _filesClient;
 
   Uint8List? _imageBytes;
@@ -534,6 +555,7 @@ class _HomePageState extends State<HomePage> {
   UploadedGeminiFile? _uploadedFile;
   List<ChatMessage> _messages = [];
   bool _isLoading = false;
+  bool _hasInitialGeneration = false;
   ChatSession? _chatSession;
   GenerativeModel? _model;
   String _statusMessage = '';
@@ -546,29 +568,33 @@ class _HomePageState extends State<HomePage> {
   bool get _isCustomPromptActive =>
       _customPrompt != null && _customPrompt!.isNotEmpty;
 
+  bool get _canSendMessage =>
+      _imageBytes != null &&
+      !_isLoading &&
+      (_chatSession != null || _hasInitialGeneration);
+
   @override
   void initState() {
     super.initState();
-    _ownsBaseClient = widget.httpClient == null;
-    _baseClient = widget.httpClient ?? createBaseHttpClient();
-    _resilientClient = createResilientHttpClient(
-      baseClient: _baseClient,
-      cancelHandle: _cancelHandle,
+    _http = ScopedHttpClient(
+      managedClient: widget.managedHttpClient,
+      httpClient: widget.httpClient,
     );
-    _filesClient = GeminiFilesClient(httpClient: _resilientClient);
+    _filesClient = GeminiFilesClient(httpClient: _http.client);
     _checkApiKey();
   }
 
-  Future<void>? _discardUploadedFile() {
+  void _scheduleFileDelete(UploadedGeminiFile file) {
+    final future = _filesClient.deleteFileBestEffort(file);
+    _http.trackCleanupTask(future);
+    unawaited(future);
+  }
+
+  void _discardUploadedFile() {
     final uploaded = _uploadedFile;
     _uploadedFile = null;
-    if (uploaded == null) return null;
-    final future = _filesClient.deleteFileBestEffort(
-      fileName: uploaded.name,
-      apiKey: uploaded.apiKey,
-    );
-    unawaited(future);
-    return future;
+    if (uploaded == null) return;
+    _scheduleFileDelete(uploaded);
   }
 
   Future<void> _checkApiKey() async {
@@ -592,7 +618,7 @@ class _HomePageState extends State<HomePage> {
 
     if (apiKeyChanged) {
       _operationId++;
-      _cancelHandle.cancelActiveRequests();
+      _http.cancelActiveRequests();
       _discardUploadedFile();
       _chatSession = null;
     }
@@ -610,7 +636,7 @@ class _HomePageState extends State<HomePage> {
   void _initModel(String apiKey) {
     _model = _createGenerativeModel(
       apiKey: apiKey,
-      httpClient: _resilientClient,
+      httpClient: _http.client,
     );
   }
 
@@ -648,13 +674,14 @@ class _HomePageState extends State<HomePage> {
       final bytes = await pickedFile.readAsBytes();
       if (!mounted) return;
       _operationId++;
-      _cancelHandle.cancelActiveRequests();
+      _http.cancelActiveRequests();
       _discardUploadedFile();
       setState(() {
         _imageBytes = bytes;
         _imageMimeType = detectImageMimeType(bytes);
         _messages = [];
         _chatSession = null;
+        _hasInitialGeneration = false;
         _isLoading = false;
         _statusMessage = '';
       });
@@ -687,16 +714,82 @@ class _HomePageState extends State<HomePage> {
     );
 
     if (!mounted || _operationId != opId) {
-      unawaited(
-        _filesClient.deleteFileBestEffort(
-          fileName: uploaded.name,
-          apiKey: uploaded.apiKey,
-        ),
-      );
+      _scheduleFileDelete(uploaded);
       return null;
     }
 
     _uploadedFile = uploaded;
+    return uploaded;
+  }
+
+  void _clearLoadingIfCurrent(int opId) {
+    if (!mounted || _operationId != opId) return;
+    if (_isLoading || _statusMessage.isNotEmpty) {
+      setState(() {
+        _isLoading = false;
+        _statusMessage = '';
+      });
+    }
+  }
+
+  void _handleChatError({
+    required int opId,
+    required Object error,
+    required String apiKey,
+    required String errorLogPrefix,
+  }) {
+    if (!mounted || _operationId != opId) return;
+    final classified = classifyError(
+      error,
+      secretApiKey: apiKey,
+      httpStatusCode: _http.lastResponseStatusCode,
+    );
+    debugPrint(
+      '$errorLogPrefix: ${maskSecrets(error.toString(), secretApiKey: apiKey)}',
+    );
+    setState(() {
+      _messages.add(ChatMessage(role: 'model', text: classified.format()));
+      _isLoading = false;
+      _statusMessage = '';
+    });
+  }
+
+  /// Ensures the current image is uploaded for [apiKey], reporting any
+  /// non-cancel error to the chat log and updating [_statusMessage] once
+  /// ready. Returns `null` if cancelled, stale, or failed.
+  Future<UploadedGeminiFile?> _prepareUploadedFile({
+    required int opId,
+    required String apiKey,
+    required bool needsUpload,
+    required String nextStatusMessage,
+    required String errorLogPrefix,
+  }) async {
+    UploadedGeminiFile? uploaded;
+    try {
+      uploaded = await _ensureImageUploaded(opId: opId, apiKey: apiKey);
+    } on RequestCancelledException {
+      _clearLoadingIfCurrent(opId);
+      return null;
+    } catch (e) {
+      _handleChatError(
+        opId: opId,
+        error: e,
+        apiKey: apiKey,
+        errorLogPrefix: errorLogPrefix,
+      );
+      return null;
+    }
+
+    if (uploaded == null || !mounted || _operationId != opId) {
+      _clearLoadingIfCurrent(opId);
+      return null;
+    }
+
+    if (needsUpload) {
+      setState(() {
+        _statusMessage = nextStatusMessage;
+      });
+    }
     return uploaded;
   }
 
@@ -722,186 +815,155 @@ class _HomePageState extends State<HomePage> {
         onSuccess?.call();
       }
     } on RequestCancelledException {
-      // Cancelled by reset, selecting a new image, API key change, or dispose.
+      _clearLoadingIfCurrent(opId);
     } catch (e) {
-      if (!mounted || _operationId != opId) return;
-      final classified = classifyError(
-        e,
-        secretApiKey: apiKey,
-        httpStatusCode: _resilientClient.lastResponseStatusCode,
+      _handleChatError(
+        opId: opId,
+        error: e,
+        apiKey: apiKey,
+        errorLogPrefix: errorLogPrefix,
       );
-      debugPrint(
-        '$errorLogPrefix: ${maskSecrets(e.toString(), secretApiKey: apiKey)}',
-      );
-
-      setState(() {
-        _messages.add(ChatMessage(role: 'model', text: classified.format()));
-        _isLoading = false;
-        _statusMessage = '';
-      });
     }
   }
 
   Future<void> _generateAltText() async {
-    if (_imageBytes == null) return;
+    if (_isLoading || _imageBytes == null) return;
 
-    final key = await _secureStorage.read(key: _apiKeyKey);
-    if (key == null) {
-      if (mounted) Navigator.pushNamed(context, '/settings');
-      return;
-    }
-
-    final customPrompt =
-        await _secureStorage.read(key: 'custom_initial_prompt');
-    if (!mounted) return;
-
-    _currentApiKey = key;
-    if (_uploadedFile != null && _uploadedFile!.apiKey != key) {
-      _discardUploadedFile();
-      _chatSession = null;
-    }
-
-    final prompt = (customPrompt != null && customPrompt.isNotEmpty)
-        ? customPrompt
-        : AppConfig.initialPromptDefault;
-
-    final userMessage =
-        _isCustomPromptActive ? 'カスタム指示を実行中...' : '画像の代替テキストを生成中...';
-    final needsUpload = _uploadedFile == null;
     final opId = ++_operationId;
-
     setState(() {
       _isLoading = true;
-      _statusMessage = needsUpload ? '画像をアップロード中...' : 'Altテキストを生成中...';
-      _messages.add(ChatMessage(role: 'user', text: userMessage));
+      _statusMessage = '';
     });
 
-    UploadedGeminiFile? uploaded;
     try {
-      uploaded = await _ensureImageUploaded(opId: opId, apiKey: key);
-    } on RequestCancelledException {
-      return;
-    } catch (e) {
-      if (!mounted || _operationId != opId) return;
-      final classified = classifyError(
-        e,
-        secretApiKey: key,
-        httpStatusCode: _resilientClient.lastResponseStatusCode,
-      );
-      debugPrint(
-        'Error uploading image: '
-        '${maskSecrets(e.toString(), secretApiKey: key)}',
-      );
-      setState(() {
-        _messages.add(ChatMessage(role: 'model', text: classified.format()));
-        _isLoading = false;
-        _statusMessage = '';
-      });
-      return;
-    }
-
-    if (uploaded == null || !mounted || _operationId != opId) return;
-
-    if (needsUpload) {
-      setState(() {
-        _statusMessage = 'Altテキストを生成中...';
-      });
-    }
-
-    _initModel(key);
-    _chatSession = _model!.startChat();
-
-    await _sendChatRequest(
-      opId: opId,
-      apiKey: key,
-      content: Content.multi([
-        TextPart(prompt),
-        FilePart(uploaded.uri),
-      ]),
-      errorLogPrefix: 'Error generating alt text',
-    );
-  }
-
-  Future<void> _sendMessage() async {
-    if (_textController.text.isEmpty || _imageBytes == null) return;
-
-    final key = await _secureStorage.read(key: _apiKeyKey);
-    if (key == null || !mounted) return;
-
-    _currentApiKey = key;
-    if (_uploadedFile != null && _uploadedFile!.apiKey != key) {
-      _discardUploadedFile();
-      _chatSession = null;
-    }
-
-    final userMessage = _textController.text;
-    final opId = ++_operationId;
-    final needsUpload = _chatSession == null && _uploadedFile == null;
-
-    setState(() {
-      _messages.add(ChatMessage(role: 'user', text: userMessage));
-      _isLoading = true;
-      _statusMessage = needsUpload ? '画像をアップロード中...' : '回答を生成中...';
-      _textController.clear();
-    });
-
-    _scrollToBottom();
-
-    Content contentToSend;
-    if (_chatSession == null) {
-      UploadedGeminiFile? uploaded;
-      try {
-        uploaded = await _ensureImageUploaded(opId: opId, apiKey: key);
-      } on RequestCancelledException {
-        return;
-      } catch (e) {
-        if (!mounted || _operationId != opId) return;
-        final classified = classifyError(
-          e,
-          secretApiKey: key,
-          httpStatusCode: _resilientClient.lastResponseStatusCode,
-        );
-        debugPrint(
-          'Error uploading image for chat: '
-          '${maskSecrets(e.toString(), secretApiKey: key)}',
-        );
-        setState(() {
-          _messages.add(ChatMessage(role: 'model', text: classified.format()));
-          _isLoading = false;
-          _statusMessage = '';
-        });
+      final key = await _secureStorage.read(key: _apiKeyKey);
+      if (!mounted || _operationId != opId || _imageBytes == null) return;
+      if (key == null) {
+        _clearLoadingIfCurrent(opId);
+        Navigator.pushNamed(context, '/settings');
         return;
       }
 
-      if (uploaded == null || !mounted || _operationId != opId) return;
+      final customPrompt =
+          await _secureStorage.read(key: 'custom_initial_prompt');
+      if (!mounted || _operationId != opId || _imageBytes == null) return;
 
-      if (needsUpload) {
-        setState(() {
-          _statusMessage = '回答を生成中...';
-        });
+      _currentApiKey = key;
+      if (_uploadedFile != null && _uploadedFile!.apiKey != key) {
+        _discardUploadedFile();
+        _chatSession = null;
       }
+
+      final prompt = (customPrompt != null && customPrompt.isNotEmpty)
+          ? customPrompt
+          : AppConfig.initialPromptDefault;
+
+      final userMessage =
+          _isCustomPromptActive ? 'カスタム指示を実行中...' : '画像の代替テキストを生成中...';
+      final needsUpload = _uploadedFile == null;
+
+      setState(() {
+        _statusMessage = needsUpload ? '画像をアップロード中...' : 'Altテキストを生成中...';
+        _messages.add(ChatMessage(role: 'user', text: userMessage));
+      });
+
+      final uploaded = await _prepareUploadedFile(
+        opId: opId,
+        apiKey: key,
+        needsUpload: needsUpload,
+        nextStatusMessage: 'Altテキストを生成中...',
+        errorLogPrefix: 'Error uploading image',
+      );
+      if (uploaded == null) return;
 
       _initModel(key);
       _chatSession = _model!.startChat();
-      contentToSend = Content.multi([
-        TextPart(userMessage),
-        FilePart(uploaded.uri),
-      ]);
-    } else {
-      contentToSend = Content.text(userMessage);
-    }
+      _hasInitialGeneration = true;
 
-    await _sendChatRequest(
-      opId: opId,
-      apiKey: key,
-      content: contentToSend,
-      errorLogPrefix: 'Error during send',
-      onSuccess: _scrollToBottom,
-    );
+      await _sendChatRequest(
+        opId: opId,
+        apiKey: key,
+        content: Content.multi([
+          TextPart(prompt),
+          FilePart(uploaded.uri),
+        ]),
+        errorLogPrefix: 'Error generating alt text',
+      );
+    } finally {
+      _clearLoadingIfCurrent(opId);
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final userMessage = _textController.text;
+    if (userMessage.isEmpty || !_canSendMessage) return;
+
+    final opId = ++_operationId;
+    setState(() {
+      _isLoading = true;
+      _statusMessage = '';
+    });
+
+    try {
+      final key = await _secureStorage.read(key: _apiKeyKey);
+      if (!mounted ||
+          _operationId != opId ||
+          _imageBytes == null ||
+          key == null) {
+        return;
+      }
+
+      _currentApiKey = key;
+      if (_uploadedFile != null && _uploadedFile!.apiKey != key) {
+        _discardUploadedFile();
+        _chatSession = null;
+      }
+
+      final needsUpload = _chatSession == null && _uploadedFile == null;
+
+      setState(() {
+        _messages.add(ChatMessage(role: 'user', text: userMessage));
+        _statusMessage = needsUpload ? '画像をアップロード中...' : '回答を生成中...';
+        _textController.clear();
+      });
+
+      _scrollToBottom();
+
+      Content contentToSend;
+      if (_chatSession == null) {
+        final uploaded = await _prepareUploadedFile(
+          opId: opId,
+          apiKey: key,
+          needsUpload: needsUpload,
+          nextStatusMessage: '回答を生成中...',
+          errorLogPrefix: 'Error uploading image for chat',
+        );
+        if (uploaded == null) return;
+
+        _initModel(key);
+        _chatSession = _model!.startChat();
+        contentToSend = Content.multi([
+          TextPart(userMessage),
+          FilePart(uploaded.uri),
+        ]);
+      } else {
+        contentToSend = Content.text(userMessage);
+      }
+
+      await _sendChatRequest(
+        opId: opId,
+        apiKey: key,
+        content: contentToSend,
+        errorLogPrefix: 'Error during send',
+        onSuccess: _scrollToBottom,
+      );
+    } finally {
+      _clearLoadingIfCurrent(opId);
+    }
   }
 
   void _regenerateLatestResponse() {
-    if (_messages.isEmpty) return;
+    if (_isLoading || _messages.isEmpty) return;
 
     int lastUserIndex = -1;
     for (int i = _messages.length - 1; i >= 0; i--) {
@@ -946,13 +1008,14 @@ class _HomePageState extends State<HomePage> {
 
   void _resetState() {
     _operationId++;
-    _cancelHandle.cancelActiveRequests();
+    _http.cancelActiveRequests();
     _discardUploadedFile();
     setState(() {
       _imageBytes = null;
       _imageMimeType = null;
       _messages = [];
       _chatSession = null;
+      _hasInitialGeneration = false;
       _textController.clear();
       _isLoading = false;
       _statusMessage = '';
@@ -969,16 +1032,8 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _operationId++;
-    _cancelHandle.cancelActiveRequests();
-    final deleteFuture = _discardUploadedFile();
-    _resilientClient.close();
-    if (_ownsBaseClient) {
-      if (deleteFuture != null) {
-        unawaited(deleteFuture.whenComplete(_baseClient.close));
-      } else {
-        _baseClient.close();
-      }
-    }
+    _discardUploadedFile();
+    _http.dispose();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -1206,13 +1261,13 @@ class _HomePageState extends State<HomePage> {
                             EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         counterText: '',
                       ),
-                      onSubmitted: (_) => _sendMessage(),
-                      enabled: _imageBytes != null,
+                      onSubmitted: _canSendMessage ? (_) => _sendMessage() : null,
+                      enabled: _canSendMessage,
                     ),
                   ),
                   IconButton(
                     icon: const Icon(Icons.send),
-                    onPressed: _imageBytes != null ? _sendMessage : null,
+                    onPressed: _canSendMessage ? _sendMessage : null,
                     tooltip: '送信',
                   ),
                 ],

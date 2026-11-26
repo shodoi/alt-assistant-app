@@ -7,36 +7,7 @@ import 'package:http/io_client.dart';
 import 'package:http/testing.dart';
 import 'package:my_alt_generator/resilient_http_client.dart';
 
-/// A transport client that captures incoming [http.BaseRequest]s (including
-/// [http.Abortable.abortTrigger]) and reacts to aborts just like Cronet/IO.
-class _AbortObservingClient extends http.BaseClient {
-  final Future<http.StreamedResponse> Function(
-    http.BaseRequest request,
-    List<int> bodyBytes,
-    Future<void>? abortTrigger,
-  ) handler;
-
-  final List<http.BaseRequest> requests = [];
-  final List<bool> abortCompletedFlags = [];
-
-  _AbortObservingClient(this.handler);
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    requests.add(request);
-    final Future<void>? trigger =
-        request is http.Abortable ? request.abortTrigger : null;
-    final idx = abortCompletedFlags.length;
-    abortCompletedFlags.add(false);
-    if (trigger != null) {
-      unawaited(trigger.whenComplete(() {
-        abortCompletedFlags[idx] = true;
-      }));
-    }
-    final bytes = await request.finalize().toBytes();
-    return handler(request, bytes, trigger);
-  }
-}
+import 'test_helpers.dart';
 
 void main() {
   group('createBaseHttpClient', () {
@@ -77,7 +48,7 @@ void main() {
     testWidgets(
       'aborts hanging request via abortTrigger at 30s with TimeoutException and no retry',
       (WidgetTester tester) async {
-        final transport = _AbortObservingClient((request, bytes, trigger) {
+        final transport = AbortObservingHttpClient((request, bytes, trigger) {
           final completer = Completer<http.StreamedResponse>();
           trigger?.whenComplete(() {
             if (!completer.isCompleted) {
@@ -115,7 +86,7 @@ void main() {
       'aborts in-flight request via RequestCancelHandle with RequestCancelledException and remains reusable',
       (WidgetTester tester) async {
         var attempt = 0;
-        final transport = _AbortObservingClient((request, bytes, trigger) {
+        final transport = AbortObservingHttpClient((request, bytes, trigger) {
           attempt++;
           if (attempt == 1) {
             final completer = Completer<http.StreamedResponse>();
@@ -172,7 +143,7 @@ void main() {
     testWidgets('caps total wait time including retries at 30s',
         (WidgetTester tester) async {
       var attempt = 0;
-      final transport = _AbortObservingClient((request, bytes, trigger) {
+      final transport = AbortObservingHttpClient((request, bytes, trigger) {
         attempt++;
         final completer = Completer<http.StreamedResponse>();
         trigger?.whenComplete(() {
@@ -228,7 +199,7 @@ void main() {
           final attemptTimes = <Duration>[];
           final start = tester.binding.clock.now();
 
-          final transport = _AbortObservingClient((request, bytes, trigger) async {
+          final transport = AbortObservingHttpClient((request, bytes, trigger) async {
             attemptTimes.add(tester.binding.clock.now().difference(start));
             if (attemptTimes.length <= 2) {
               throw err;
@@ -376,7 +347,7 @@ void main() {
       'DELETE requests are not aborted by RequestCancelHandle (so reset/dispose cleanup can finish)',
       (WidgetTester tester) async {
         final completer = Completer<http.StreamedResponse>();
-        final transport = _AbortObservingClient((request, bytes, trigger) {
+        final transport = AbortObservingHttpClient((request, bytes, trigger) {
           trigger?.whenComplete(() {
             if (!completer.isCompleted) {
               completer.completeError(http.RequestAbortedException(request.url));
@@ -406,6 +377,131 @@ void main() {
         completer.complete(http.StreamedResponse(const Stream.empty(), 200));
         await tester.pump();
         expect(response?.statusCode, 200);
+      },
+    );
+  });
+
+  group('ManagedHttpClient and ScopedHttpClient lifecycle', () {
+    testWidgets(
+      'waits for tracked DELETE cleanup to complete before closing an owned base client',
+      (WidgetTester tester) async {
+        final deleteCompleter = Completer<http.StreamedResponse>();
+        late AbortObservingHttpClient transport;
+        transport = AbortObservingHttpClient((request, bytes, trigger) {
+          // Simulate Cronet closing mid-flight if close() is called too early.
+          unawaited(transport.onClosed.whenComplete(() {
+            if (!deleteCompleter.isCompleted) {
+              deleteCompleter.completeError(
+                http.ClientException('Closed mid-flight', request.url),
+              );
+            }
+          }));
+          trigger?.whenComplete(() {
+            if (!deleteCompleter.isCompleted) {
+              deleteCompleter.completeError(
+                http.RequestAbortedException(request.url),
+              );
+            }
+          });
+          return deleteCompleter.future;
+        });
+
+        final managed = ManagedHttpClient(
+          baseClient: transport,
+          ownsBaseClient: true,
+        );
+        final scope = ScopedHttpClient(managedClient: managed);
+
+        http.Response? deleteResponse;
+        Object? deleteError;
+        final deleteTask = scope.client
+            .delete(Uri.https('example.com', '/v1beta/files/cleanup-1'))
+            .then<void>(
+              (r) => deleteResponse = r,
+              onError: (Object e) => deleteError = e,
+            );
+        scope.trackCleanupTask(deleteTask);
+
+        await tester.pump();
+        expect(transport.requests, hasLength(1));
+
+        // Disposing screen scope + app managed client while DELETE is in-flight
+        scope.dispose();
+        managed.dispose();
+        await tester.pump();
+
+        expect(transport.isClosed, isFalse);
+        expect(transport.abortCompletedFlags.single, isFalse);
+        expect(deleteError, isNull);
+
+        // Complete the DELETE -> client closes immediately afterwards.
+        deleteCompleter.complete(http.StreamedResponse(const Stream.empty(), 200));
+        await tester.pump();
+
+        expect(deleteError, isNull);
+        expect(deleteResponse?.statusCode, 200);
+        expect(transport.isClosed, isTrue);
+      },
+    );
+
+    testWidgets(
+      'aborts hanging DELETE and closes owned base client after safety timeout with zero pending timers',
+      (WidgetTester tester) async {
+        final deleteCompleter = Completer<http.StreamedResponse>();
+        final transport = AbortObservingHttpClient((request, bytes, trigger) {
+          trigger?.whenComplete(() {
+            if (!deleteCompleter.isCompleted) {
+              deleteCompleter.completeError(
+                http.RequestAbortedException(request.url),
+              );
+            }
+          });
+          return deleteCompleter.future;
+        });
+
+        final managed = ManagedHttpClient(
+          baseClient: transport,
+          ownsBaseClient: true,
+        );
+        final scope = ScopedHttpClient(managedClient: managed);
+
+        final deleteTask = scope.client
+            .delete(Uri.https('example.com', '/v1beta/files/hanging'))
+            .then<void>((_) {}, onError: (_) {});
+        scope.trackCleanupTask(deleteTask);
+
+        await tester.pump();
+        scope.dispose();
+        managed.dispose();
+
+        await tester.pump(const Duration(seconds: 4));
+        expect(transport.isClosed, isFalse);
+        expect(transport.abortCompletedFlags.single, isFalse);
+
+        await tester.pump(const Duration(seconds: 1));
+        expect(transport.abortCompletedFlags.single, isTrue);
+        expect(transport.isClosed, isTrue);
+      },
+    );
+
+    testWidgets(
+      'does NOT close an unowned injected base client on dispose',
+      (WidgetTester tester) async {
+        final transport = AbortObservingHttpClient(
+          (request, bytes, trigger) async =>
+              http.StreamedResponse(const Stream.empty(), 200),
+        );
+
+        final managed = ManagedHttpClient(
+          baseClient: transport,
+          ownsBaseClient: false,
+        );
+        final scope = ScopedHttpClient(managedClient: managed);
+        scope.dispose();
+        managed.dispose();
+        await tester.pump();
+
+        expect(transport.isClosed, isFalse);
       },
     );
   });

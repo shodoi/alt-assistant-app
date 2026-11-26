@@ -97,12 +97,18 @@ void main() {
 
       final filesClient = GeminiFilesClient(httpClient: mockClient);
       await filesClient.deleteFileBestEffort(
-        fileName: 'files/abc123',
-        apiKey: 'my-key',
+        UploadedGeminiFile(
+          name: 'files/abc123',
+          uri: Uri.parse('https://generativelanguage.googleapis.com/v1beta/files/abc123'),
+          apiKey: 'my-key',
+        ),
       );
       await filesClient.deleteFileBestEffort(
-        fileName: '/files/def456',
-        apiKey: 'my-key',
+        UploadedGeminiFile(
+          name: '/files/def456',
+          uri: Uri.parse('https://generativelanguage.googleapis.com/v1beta/files/def456'),
+          apiKey: 'my-key',
+        ),
       );
 
       expect(capturedRequests, hasLength(2));
@@ -126,8 +132,11 @@ void main() {
 
       await expectLater(
         filesClient.deleteFileBestEffort(
-          fileName: 'files/offline-1',
-          apiKey: 'secret-key',
+          UploadedGeminiFile(
+            name: 'files/offline-1',
+            uri: Uri.parse('https://generativelanguage.googleapis.com/v1beta/files/offline-1'),
+            apiKey: 'secret-key',
+          ),
         ),
         completes,
       );
