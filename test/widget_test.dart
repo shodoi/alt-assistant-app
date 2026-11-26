@@ -57,6 +57,21 @@ List<MethodCall> _mockImagePickerChannel(File imageFile) {
   return calls;
 }
 
+Future<void> _selectImageSourceAndWait(
+  WidgetTester tester,
+  String optionLabel,
+) async {
+  await tester.tap(find.text(optionLabel));
+  await tester.pumpAndSettle();
+  for (int i = 0; i < 10; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
+}
+
 Future<void> _selectTestImage(WidgetTester tester) async {
   final imageFile = _createTempSampleImage();
   _mockImagePickerChannel(imageFile);
@@ -64,13 +79,7 @@ Future<void> _selectTestImage(WidgetTester tester) async {
   await tester.tap(find.text('タップして画像を選択'));
   await tester.pumpAndSettle();
 
-  await tester.tap(find.text('ライブラリから選択'));
-  await tester.pumpAndSettle();
-  for (int i = 0; i < 10; i++) {
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-    await tester.pump();
-  }
-  await tester.pumpAndSettle();
+  await _selectImageSourceAndWait(tester, 'ライブラリから選択');
 }
 
 http.Response _geminiSuccessResponse(String text) {
@@ -279,13 +288,7 @@ void main() {
     expect(find.text('カメラで撮影'), findsOneWidget);
     expect(find.text('ファイルから選択'), findsNothing);
 
-    await tester.tap(find.text('カメラで撮影'));
-    await tester.pumpAndSettle();
-    for (int i = 0; i < 10; i++) {
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-      await tester.pump();
-    }
-    await tester.pumpAndSettle();
+    await _selectImageSourceAndWait(tester, 'カメラで撮影');
 
     expect(pickerCalls, hasLength(1));
     expect(pickerCalls.single.method, 'pickImage');

@@ -12,26 +12,7 @@ void main() {
   runApp(const AltTextGeneratorApp());
 }
 
-class SecureStorageHelper {
-  static const _storage = FlutterSecureStorage();
-
-  static Future<String?> read({required String key}) async {
-    return await _storage.read(key: key);
-  }
-
-  static Future<void> write({required String key, required String? value}) async {
-    if (value == null) {
-      await delete(key: key);
-      return;
-    }
-
-    await _storage.write(key: key, value: value);
-  }
-
-  static Future<void> delete({required String key}) async {
-    await _storage.delete(key: key);
-  }
-}
+const _secureStorage = FlutterSecureStorage();
 
 /// Creates a [GenerativeModel] configured with [AppConfig.modelName].
 GenerativeModel _createGenerativeModel({
@@ -94,8 +75,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadSettings() async {
     setState(() => _isLoading = true); // ローディング状態
-    final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    final customPrompt = await SecureStorageHelper.read(key: _customPromptKey);
+    final key = await _secureStorage.read(key: _apiKeyKey);
+    final customPrompt = await _secureStorage.read(key: _customPromptKey);
 
     if (mounted) {
       setState(() {
@@ -131,8 +112,8 @@ class _SettingsPageState extends State<SettingsPage> {
       await model.generateContent([Content.text('test')]);
 
       // 保存
-      await SecureStorageHelper.write(key: _apiKeyKey, value: newKey);
-      await SecureStorageHelper.write(key: _customPromptKey, value: _promptController.text);
+      await _secureStorage.write(key: _apiKeyKey, value: newKey);
+      await _secureStorage.write(key: _customPromptKey, value: _promptController.text);
       
       if (mounted) {
         FocusScope.of(context).unfocus(); // キーボードを閉じる
@@ -368,7 +349,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                           return;
                                         }
                                         
-                                        await SecureStorageHelper.write(
+                                        await _secureStorage.write(
                                             key: _customPromptKey,
                                             value: text);
                                         if (context.mounted) {
@@ -393,7 +374,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   const SizedBox(width: 8),
                                   OutlinedButton(
                                     onPressed: () async {
-                                      await SecureStorageHelper.delete(key: _customPromptKey);
+                                      await _secureStorage.delete(key: _customPromptKey);
                                       setState(() {
                                         _promptController.clear();
                                       });
@@ -462,8 +443,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _checkApiKey() async {
-    final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    final customPrompt = await SecureStorageHelper.read(key: 'custom_initial_prompt');
+    final key = await _secureStorage.read(key: _apiKeyKey);
+    final customPrompt = await _secureStorage.read(key: 'custom_initial_prompt');
 
     if (key == null) {
       if (mounted) {
@@ -566,13 +547,13 @@ class _HomePageState extends State<HomePage> {
   Future<void> _generateAltText() async {
     if (_imageBytes == null) return;
 
-    final key = await SecureStorageHelper.read(key: _apiKeyKey);
+    final key = await _secureStorage.read(key: _apiKeyKey);
     if (key == null) {
       if (mounted) Navigator.pushNamed(context, '/settings');
       return;
     }
 
-    final customPrompt = await SecureStorageHelper.read(key: 'custom_initial_prompt');
+    final customPrompt = await _secureStorage.read(key: 'custom_initial_prompt');
     final prompt = (customPrompt != null && customPrompt.isNotEmpty)
         ? customPrompt
         : AppConfig.initialPromptDefault;
@@ -602,7 +583,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _sendMessage() async {
     if (_textController.text.isEmpty || _chatSession == null) return;
 
-    final key = await SecureStorageHelper.read(key: _apiKeyKey);
+    final key = await _secureStorage.read(key: _apiKeyKey);
     if (key == null) return;
 
     final userMessage = _textController.text;

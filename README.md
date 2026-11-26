@@ -85,7 +85,7 @@ Android 版は以下の Releases ページから最新の APK ファイルをダ
 - **本番 (Release — `arm64-v8a` 専用)**
   R8 によるコード・リソース縮小、Dart のデバッグシンボル分離、および難読化を有効にして `arm64-v8a` 専用 APK をビルドします。
   ```bash
-  flutter build apk --release --split-debug-info=build/app/outputs/symbols --obfuscate
+  flutter build apk --release --target-platform android-arm64 --split-debug-info=build/app/outputs/symbols --obfuscate
   # APK 出力先: build/app/outputs/flutter-apk/app-release.apk (arm64-v8a 専用)
   # デバッグシンボル出力先: build/app/outputs/symbols (Git 管理対象外)
   # インストール: flutter install -d <Device ID>
