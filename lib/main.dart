@@ -1,11 +1,11 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 
@@ -64,7 +64,9 @@ class SecureStorageHelper {
 }
 
 class AltTextGeneratorApp extends StatelessWidget {
-  const AltTextGeneratorApp({super.key});
+  final http.Client? httpClient;
+
+  const AltTextGeneratorApp({super.key, this.httpClient});
 
   @override
   Widget build(BuildContext context) {
@@ -76,8 +78,8 @@ class AltTextGeneratorApp extends StatelessWidget {
       ),
       initialRoute: '/',
       routes: {
-        '/': (context) => const HomePage(),
-        '/settings': (context) => const SettingsPage(),
+        '/': (context) => HomePage(httpClient: httpClient),
+        '/settings': (context) => SettingsPage(httpClient: httpClient),
         '/history': (context) => const HistoryPage(),
       },
     );
@@ -87,7 +89,9 @@ class AltTextGeneratorApp extends StatelessWidget {
 // --- Settings Page ---
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  final http.Client? httpClient;
+
+  const SettingsPage({super.key, this.httpClient});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -97,11 +101,9 @@ class _SettingsPageState extends State<SettingsPage> {
   final _apiKeyController = TextEditingController();
   final _promptController = TextEditingController();
   static const _apiKeyKey = 'gemini_api_key';
-  static const _modelOrderKey = 'model_order';
   static const _customPromptKey = 'custom_initial_prompt';
   bool _isLoading = true;
   bool _isVerifying = false;
-  List<String> _modelOrder = [];
 
   @override
   void initState() {
@@ -112,32 +114,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _loadSettings() async {
     setState(() => _isLoading = true); // ローディング状態
     final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    final modelOrderJson = await SecureStorageHelper.read(key: _modelOrderKey);
     final customPrompt = await SecureStorageHelper.read(key: _customPromptKey);
-    
-    List<String> loadedOrder = List<String>.from(AppConfig.defaultModelOrder);
-    if (modelOrderJson != null) {
-      try {
-        final List<dynamic> decoded = jsonDecode(modelOrderJson);
-        loadedOrder = decoded.cast<String>();
-        // Check for any missing new models or removed old models
-        final defaultSet = AppConfig.defaultModelOrder.toSet();
-        final loadedSet = loadedOrder.toSet();
-        
-        // Add any missing models to the end
-        for (final model in AppConfig.defaultModelOrder) {
-          if (!loadedSet.contains(model)) {
-            loadedOrder.add(model);
-          }
-        }
-        
-        // Remove any models that are no longer in default (optional, but good for cleanup)
-        loadedOrder.removeWhere((model) => !defaultSet.contains(model));
-
-      } catch (e) {
-        debugPrint('Error decoding model order: $e');
-      }
-    }
 
     if (mounted) {
       setState(() {
@@ -145,7 +122,6 @@ class _SettingsPageState extends State<SettingsPage> {
         if (customPrompt != null) {
           _promptController.text = customPrompt;
         }
-        _modelOrder = loadedOrder;
         _isLoading = false;
       });
     }
@@ -167,15 +143,15 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       // APIキーの有効性検証
       final model = GenerativeModel(
-        model: 'gemini-3.1-flash-lite', 
+        model: AppConfig.modelName,
         apiKey: newKey,
+        httpClient: widget.httpClient,
       );
       // テストリクエスト
       await model.generateContent([Content.text('test')]);
 
       // 保存
       await SecureStorageHelper.write(key: _apiKeyKey, value: newKey);
-      await SecureStorageHelper.write(key: _modelOrderKey, value: jsonEncode(_modelOrder));
       await SecureStorageHelper.write(key: _customPromptKey, value: _promptController.text);
       
       if (mounted) {
@@ -303,7 +279,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
                       const SizedBox(height: 16),
 
-                      // --- Model Priority Section ---
+                      // --- Model Info Section ---
                       Card(
                         elevation: 2,
                         shape: RoundedRectangleBorder(
@@ -316,188 +292,35 @@ class _SettingsPageState extends State<SettingsPage> {
                             children: [
                               Row(
                                 children: [
-                                  Icon(Icons.swap_vert, color: Colors.deepPurple.shade600, size: 20),
+                                  Icon(Icons.smart_toy_outlined, color: Colors.deepPurple.shade600, size: 20),
                                   const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      'モデル優先順位',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.deepPurple.shade700,
-                                      ),
+                                  Text(
+                                    '使用モデル',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.deepPurple.shade700,
                                     ),
                                   ),
                                 ],
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'ドラッグ＆ドロップで並べ替え',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey.shade600,
-                                ),
                               ),
                               const SizedBox(height: 12),
                               Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                                 decoration: BoxDecoration(
                                   color: colorScheme.surfaceContainerLow,
                                   borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.deepPurple.shade200),
                                 ),
-                                clipBehavior: Clip.antiAlias,
-                                height: 56.0 * _modelOrder.length + 16, // Dynamic height
-                                child: ReorderableListView(
-                                  buildDefaultDragHandles: false,
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                  proxyDecorator: (child, index, animation) {
-                                    return AnimatedBuilder(
-                                      animation: animation,
-                                      builder: (context, child) {
-                                        return Material(
-                                          elevation: 4,
-                                          borderRadius: BorderRadius.circular(8),
-                                          color: Colors.deepPurple.shade50,
-                                          shadowColor: Colors.deepPurple.shade200,
-                                          child: child,
-                                        );
-                                      },
-                                      child: child,
-                                    );
-                                  },
-                                  children: [
-                                    for (int index = 0; index < _modelOrder.length; index++)
-                                      ReorderableDragStartListener(
-                                        key: Key(_modelOrder[index]),
-                                        index: index,
-                                        child: Container(
-                                          height: 48,
-                                          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                          decoration: BoxDecoration(
-                                            color: colorScheme.surface,
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(
-                                              color: index == 0
-                                                  ? Colors.deepPurple.shade300
-                                                  : Colors.grey.shade200,
-                                              width: index == 0 ? 1.5 : 1,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Container(
-                                                width: 36,
-                                                alignment: Alignment.center,
-                                                child: Container(
-                                                  width: 24,
-                                                  height: 24,
-                                                  decoration: BoxDecoration(
-                                                    color: index == 0
-                                                        ? Colors.deepPurple.shade600
-                                                        : Colors.grey.shade400,
-                                                    borderRadius: BorderRadius.circular(12),
-                                                  ),
-                                                  alignment: Alignment.center,
-                                                  child: Text(
-                                                    '${index + 1}',
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 12,
-                                                      fontWeight: FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  _modelOrder[index],
-                                                  style: TextStyle(
-                                                    fontSize: 14,
-                                                    fontWeight: index == 0
-                                                        ? FontWeight.w600
-                                                        : FontWeight.normal,
-                                                    color: index == 0
-                                                        ? Colors.deepPurple.shade700
-                                                        : null,
-                                                  ),
-                                                ),
-                                              ),
-                                              Icon(
-                                                Icons.drag_indicator,
-                                                color: Colors.grey.shade400,
-                                                size: 20,
-                                              ),
-                                              const SizedBox(width: 8),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                  onReorder: (int oldIndex, int newIndex) {
-                                    setState(() {
-                                      if (oldIndex < newIndex) {
-                                        newIndex -= 1;
-                                      }
-                                      final String item = _modelOrder.removeAt(oldIndex);
-                                      _modelOrder.insert(newIndex, item);
-                                    });
-                                  },
+                                child: Text(
+                                  AppConfig.modelName,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.deepPurple.shade700,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: FilledButton.icon(
-                                      onPressed: () async {
-                                        await SecureStorageHelper.write(
-                                          key: _modelOrderKey,
-                                          value: jsonEncode(_modelOrder),
-                                        );
-                                        if (mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(
-                                              content: Text('モデル順を保存しました'),
-                                              backgroundColor: Colors.green,
-                                            ),
-                                          );
-                                        }
-                                      },
-                                      style: FilledButton.styleFrom(
-                                        backgroundColor: Colors.deepPurple.shade600,
-                                        padding: const EdgeInsets.symmetric(vertical: 10),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                      ),
-                                      icon: const Icon(Icons.save, size: 18),
-                                      label: const Text('モデル順を保存'),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  OutlinedButton(
-                                    onPressed: () async {
-                                      setState(() {
-                                        _modelOrder = List<String>.from(AppConfig.defaultModelOrder);
-                                      });
-                                      await SecureStorageHelper.delete(key: _modelOrderKey);
-                                      if (mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('デフォルトに戻しました'),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                    style: OutlinedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                    ),
-                                    child: const Text('デフォルトに戻す'),
-                                  ),
-                                ],
                               ),
                             ],
                           ),
@@ -568,7 +391,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                         await SecureStorageHelper.write(
                                             key: _customPromptKey,
                                             value: text);
-                                        if (mounted) {
+                                        if (context.mounted) {
                                           ScaffoldMessenger.of(context).showSnackBar(
                                             const SnackBar(
                                                 content:
@@ -594,7 +417,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                       setState(() {
                                         _promptController.clear();
                                       });
-                                      if (mounted) {
+                                      if (context.mounted) {
                                         ScaffoldMessenger.of(context).showSnackBar(
                                           const SnackBar(
                                               content: Text('デフォルトに戻しました')),
@@ -627,7 +450,9 @@ class _SettingsPageState extends State<SettingsPage> {
 // --- Home Page ---
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final http.Client? httpClient;
+
+  const HomePage({super.key, this.httpClient});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -646,9 +471,6 @@ class _HomePageState extends State<HomePage> {
   String _statusMessage = '';
 
   static const _apiKeyKey = 'gemini_api_key';
-  static const _modelOrderKey = 'model_order';
-  List<String> _modelHierarchy = List<String>.from(AppConfig.defaultModelOrder);
-  int _currentModelIndex = 0;
   int? _currentHistoryId;
   String? _customPrompt; // 追加
 
@@ -662,7 +484,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _checkApiKey() async {
     final key = await SecureStorageHelper.read(key: _apiKeyKey);
-    final modelOrderJson = await SecureStorageHelper.read(key: _modelOrderKey);
     final customPrompt = await SecureStorageHelper.read(key: 'custom_initial_prompt');
 
     if (key == null) {
@@ -672,24 +493,7 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } else {
-      // モデル階層とカスタムプロンプトの動的構築
-      List<String> hierarchy = List<String>.from(AppConfig.defaultModelOrder);
-      
-      if (modelOrderJson != null) {
-        try {
-          final List<dynamic> decoded = jsonDecode(modelOrderJson);
-          hierarchy = decoded.cast<String>();
-          // Ensure at least default models are present if something is weird, or just trust the user
-          if (hierarchy.isEmpty) {
-            hierarchy = AppConfig.defaultModelOrder;
-          }
-        } catch (e) {
-          debugPrint('Error loading model order in HomePage: $e');
-        }
-      }
-      
       setState(() {
-        _modelHierarchy = hierarchy;
         _customPrompt = customPrompt; // ステートを更新
       });
       _initModel(key);
@@ -697,10 +501,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _initModel(String apiKey) {
-    if (_modelHierarchy.isEmpty) return; // Should not happen given defaults
     _model = GenerativeModel(
-      model: _modelHierarchy[_currentModelIndex],
+      model: AppConfig.modelName,
       apiKey: apiKey,
+      httpClient: widget.httpClient,
     );
   }
 
@@ -806,6 +610,7 @@ class _HomePageState extends State<HomePage> {
         camera = cameras.first;
       }
 
+      if (!mounted) return;
       final result = await Navigator.push<XFile>(
         context,
         MaterialPageRoute(
@@ -849,67 +654,52 @@ class _HomePageState extends State<HomePage> {
 
     setState(() {
       _isLoading = true;
-      _statusMessage = 'モデルを選択中...';
+      _statusMessage = 'Altテキストを生成中...';
       _messages.add(ChatMessage(role: 'user', text: userMessage));
     });
 
-    for (int i = 0; i < _modelHierarchy.length; i++) {
-      final modelName = _modelHierarchy[i];
-      try {
-        _currentModelIndex = i;
-        _initModel(key);
+    try {
+      _initModel(key);
+
+      final content = [
+        Content.multi([
+          TextPart(prompt),
+          DataPart('image/jpeg', _imageBytes!),
+        ])
+      ];
+
+      _chatSession = _model!.startChat();
+      final response = await _chatSession!.sendMessage(content.first).timeout(
+        const Duration(seconds: AppConfig.timeoutSeconds),
+        onTimeout: () => throw Exception('タイムアウトしました'),
+      );
+
+      if (mounted) {
+        final generatedText = _cleanAiText(response.text ?? 'No response');
         setState(() {
-          _statusMessage = '$modelName で生成を試行中...';
+          _messages.add(ChatMessage(role: 'model', text: generatedText));
+          _isLoading = false;
+          _statusMessage = '';
         });
-
-        final content = [
-          Content.multi([
-            TextPart(prompt),
-            DataPart('image/jpeg', _imageBytes!),
-          ])
-        ];
-
-        _chatSession = _model!.startChat();
-        final response = await _chatSession!.sendMessage(content.first).timeout(
-          Duration(seconds: AppConfig.timeoutSeconds), // const削除
-          onTimeout: () => throw Exception('タイムアウトしました'),
-        );
-
-        if (mounted) {
-          final generatedText = _cleanAiText(response.text ?? 'No response');
-          setState(() {
-            _messages.add(ChatMessage(role: 'model', text: generatedText));
-            _isLoading = false;
-            _statusMessage = '';
-          });
-          if (response.text != null) {
-            _saveToHistory(generatedText);
-          }
+        if (response.text != null) {
+          _saveToHistory(generatedText);
         }
-        return;
-      } catch (e) {
-        debugPrint('Error with $modelName: $e');
-        
-        if (i == _modelHierarchy.length - 1) {
-          // 最後のモデルでも失敗した場合のみユーザーに通知
-          String userError = 'エラーが発生しました。時間をおいて再試行してください。';
-          String errorMsg = e.toString();
-          if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
-            userError = '安全性ポリシーによりこの画像は処理できませんでした。';
-          }
-          
-          if (mounted) {
-            setState(() {
-              _messages.add(ChatMessage(role: 'model', text: userError));
-              _isLoading = false;
-              _statusMessage = '';
-            });
-          }
-        } else {
-          setState(() {
-            _statusMessage = '$modelName が失敗しました。次のモデルを試します...';
-          });
-        }
+      }
+    } catch (e) {
+      debugPrint('Error generating alt text: $e');
+
+      String userError = 'エラーが発生しました。時間をおいて再試行してください。';
+      final errorMsg = e.toString();
+      if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
+        userError = '安全性ポリシーによりこの画像は処理できませんでした。';
+      }
+
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(role: 'model', text: userError));
+          _isLoading = false;
+          _statusMessage = '';
+        });
       }
     }
   }
@@ -930,58 +720,37 @@ class _HomePageState extends State<HomePage> {
 
     _scrollToBottom();
 
-    for (int i = _currentModelIndex; i < _modelHierarchy.length; i++) {
-      final modelName = _modelHierarchy[i];
-      try {
+    try {
+      final response = await _chatSession!.sendMessage(Content.text(userMessage)).timeout(
+            const Duration(seconds: AppConfig.timeoutSeconds),
+            onTimeout: () => throw Exception('タイムアウトしました'),
+          );
+      if (mounted) {
         setState(() {
-          _statusMessage = '$modelName で回答を生成中...';
+          _messages.add(ChatMessage(role: 'model', text: _cleanAiText(response.text ?? 'No response')));
+          _isLoading = false;
+          _statusMessage = '';
         });
+        _scrollToBottom();
+        // チャットの続きも履歴に保存（タイトルは最初の生成結果を維持）
+        final historyTitle = _messages.firstWhere((m) => m.role == 'model', orElse: () => _messages.first).text;
+        _saveToHistory(historyTitle);
+      }
+    } catch (e) {
+      debugPrint('Error during send: $e');
 
-        if (i != _currentModelIndex) {
-          _currentModelIndex = i;
-          _initModel(key);
-          final history = _chatSession?.history.toList() ?? [];
-          _chatSession = _model!.startChat(history: history);
-        }
+      String userError = 'エラーが発生しました。';
+      final errorMsg = e.toString();
+      if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
+        userError = '安全性ポリシーにより回答できませんでした。';
+      }
 
-        final response = await _chatSession!.sendMessage(Content.text(userMessage)).timeout(
-              Duration(seconds: AppConfig.timeoutSeconds), // const削除
-              onTimeout: () => throw Exception('タイムアウトしました'),
-            );
-        if (mounted) {
-          setState(() {
-            _messages.add(ChatMessage(role: 'model', text: _cleanAiText(response.text ?? 'No response')));
-            _isLoading = false;
-            _statusMessage = '';
-          });
-          _scrollToBottom();
-          // チャットの続きも履歴に保存（タイトルは最初の生成結果を維持）
-          final historyTitle = _messages.firstWhere((m) => m.role == 'model', orElse: () => _messages.first).text;
-          _saveToHistory(historyTitle);
-        }
-        return;
-      } catch (e) {
-        debugPrint('Error with $modelName during send: $e');
-        
-        if (i == _modelHierarchy.length - 1) {
-           String userError = 'エラーが発生しました。';
-           String errorMsg = e.toString();
-           if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
-             userError = '安全性ポリシーにより回答できませんでした。';
-           }
-
-          if (mounted) {
-            setState(() {
-              _messages.add(ChatMessage(role: 'model', text: userError));
-              _isLoading = false;
-              _statusMessage = '';
-            });
-          }
-        } else {
-          setState(() {
-            _statusMessage = '$modelName が失敗しました。次のモデルを試します...';
-          });
-        }
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(role: 'model', text: userError));
+          _isLoading = false;
+          _statusMessage = '';
+        });
       }
     }
   }
@@ -1221,7 +990,7 @@ class _HomePageState extends State<HomePage> {
                       child: Container(
                         padding: const EdgeInsets.all(4),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.5),
+                          color: Colors.black.withValues(alpha: 0.5),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(
@@ -1250,9 +1019,9 @@ class _HomePageState extends State<HomePage> {
                   height: 200,
                   width: double.infinity,
                   color: Colors.grey[200],
-                  child: Column(
+                  child: const Column(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
+                    children: [
                       Icon(Icons.add_a_photo, size: 50, color: Colors.grey),
                       SizedBox(height: 8),
                       Text(
