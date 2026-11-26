@@ -61,6 +61,7 @@ class _CameraScreenState extends State<CameraScreen> {
                }
              }
              
+             if (!mounted) return;
              if (filePath != null) {
                Navigator.pop(context, XFile(filePath));
              } else {
