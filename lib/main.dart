@@ -63,6 +63,18 @@ class SecureStorageHelper {
   }
 }
 
+/// Creates a [GenerativeModel] configured with [AppConfig.modelName].
+GenerativeModel _createGenerativeModel({
+  required String apiKey,
+  http.Client? httpClient,
+}) {
+  return GenerativeModel(
+    model: AppConfig.modelName,
+    apiKey: apiKey,
+    httpClient: httpClient,
+  );
+}
+
 class AltTextGeneratorApp extends StatelessWidget {
   final http.Client? httpClient;
 
@@ -142,8 +154,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
     try {
       // APIキーの有効性検証
-      final model = GenerativeModel(
-        model: AppConfig.modelName,
+      final model = _createGenerativeModel(
         apiKey: newKey,
         httpClient: widget.httpClient,
       );
@@ -501,8 +512,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _initModel(String apiKey) {
-    _model = GenerativeModel(
-      model: AppConfig.modelName,
+    _model = _createGenerativeModel(
       apiKey: apiKey,
       httpClient: widget.httpClient,
     );
@@ -636,6 +646,48 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Sends [content] via [_chatSession] with timeout, error/safety handling, and state updates.
+  Future<void> _sendChatRequest({
+    required Content content,
+    required String genericErrorMessage,
+    required String safetyErrorMessage,
+    required String errorLogPrefix,
+    void Function(String? rawText, String cleanedText)? onSuccess,
+  }) async {
+    try {
+      final response = await _chatSession!.sendMessage(content).timeout(
+        const Duration(seconds: AppConfig.timeoutSeconds),
+        onTimeout: () => throw Exception('タイムアウトしました'),
+      );
+
+      if (mounted) {
+        final cleanedText = _cleanAiText(response.text ?? 'No response');
+        setState(() {
+          _messages.add(ChatMessage(role: 'model', text: cleanedText));
+          _isLoading = false;
+          _statusMessage = '';
+        });
+        onSuccess?.call(response.text, cleanedText);
+      }
+    } catch (e) {
+      debugPrint('$errorLogPrefix: $e');
+
+      final errorMsg = e.toString();
+      final userError =
+          (errorMsg.contains('SAFETY') || errorMsg.contains('safety'))
+              ? safetyErrorMessage
+              : genericErrorMessage;
+
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(role: 'model', text: userError));
+          _isLoading = false;
+          _statusMessage = '';
+        });
+      }
+    }
+  }
+
   Future<void> _generateAltText() async {
     if (_imageBytes == null) return;
 
@@ -658,50 +710,23 @@ class _HomePageState extends State<HomePage> {
       _messages.add(ChatMessage(role: 'user', text: userMessage));
     });
 
-    try {
-      _initModel(key);
+    _initModel(key);
+    _chatSession = _model!.startChat();
 
-      final content = [
-        Content.multi([
-          TextPart(prompt),
-          DataPart('image/jpeg', _imageBytes!),
-        ])
-      ];
-
-      _chatSession = _model!.startChat();
-      final response = await _chatSession!.sendMessage(content.first).timeout(
-        const Duration(seconds: AppConfig.timeoutSeconds),
-        onTimeout: () => throw Exception('タイムアウトしました'),
-      );
-
-      if (mounted) {
-        final generatedText = _cleanAiText(response.text ?? 'No response');
-        setState(() {
-          _messages.add(ChatMessage(role: 'model', text: generatedText));
-          _isLoading = false;
-          _statusMessage = '';
-        });
-        if (response.text != null) {
-          _saveToHistory(generatedText);
+    await _sendChatRequest(
+      content: Content.multi([
+        TextPart(prompt),
+        DataPart('image/jpeg', _imageBytes!),
+      ]),
+      genericErrorMessage: 'エラーが発生しました。時間をおいて再試行してください。',
+      safetyErrorMessage: '安全性ポリシーによりこの画像は処理できませんでした。',
+      errorLogPrefix: 'Error generating alt text',
+      onSuccess: (rawText, cleanedText) {
+        if (rawText != null) {
+          _saveToHistory(cleanedText);
         }
-      }
-    } catch (e) {
-      debugPrint('Error generating alt text: $e');
-
-      String userError = 'エラーが発生しました。時間をおいて再試行してください。';
-      final errorMsg = e.toString();
-      if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
-        userError = '安全性ポリシーによりこの画像は処理できませんでした。';
-      }
-
-      if (mounted) {
-        setState(() {
-          _messages.add(ChatMessage(role: 'model', text: userError));
-          _isLoading = false;
-          _statusMessage = '';
-        });
-      }
-    }
+      },
+    );
   }
 
   Future<void> _sendMessage() async {
@@ -720,39 +745,20 @@ class _HomePageState extends State<HomePage> {
 
     _scrollToBottom();
 
-    try {
-      final response = await _chatSession!.sendMessage(Content.text(userMessage)).timeout(
-            const Duration(seconds: AppConfig.timeoutSeconds),
-            onTimeout: () => throw Exception('タイムアウトしました'),
-          );
-      if (mounted) {
-        setState(() {
-          _messages.add(ChatMessage(role: 'model', text: _cleanAiText(response.text ?? 'No response')));
-          _isLoading = false;
-          _statusMessage = '';
-        });
+    await _sendChatRequest(
+      content: Content.text(userMessage),
+      genericErrorMessage: 'エラーが発生しました。',
+      safetyErrorMessage: '安全性ポリシーにより回答できませんでした。',
+      errorLogPrefix: 'Error during send',
+      onSuccess: (_, __) {
         _scrollToBottom();
         // チャットの続きも履歴に保存（タイトルは最初の生成結果を維持）
-        final historyTitle = _messages.firstWhere((m) => m.role == 'model', orElse: () => _messages.first).text;
+        final historyTitle = _messages
+            .firstWhere((m) => m.role == 'model', orElse: () => _messages.first)
+            .text;
         _saveToHistory(historyTitle);
-      }
-    } catch (e) {
-      debugPrint('Error during send: $e');
-
-      String userError = 'エラーが発生しました。';
-      final errorMsg = e.toString();
-      if (errorMsg.contains('SAFETY') || errorMsg.contains('safety')) {
-        userError = '安全性ポリシーにより回答できませんでした。';
-      }
-
-      if (mounted) {
-        setState(() {
-          _messages.add(ChatMessage(role: 'model', text: userError));
-          _isLoading = false;
-          _statusMessage = '';
-        });
-      }
-    }
+      },
+    );
   }
 
   void _regenerateLatestResponse() {
