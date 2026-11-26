@@ -15,7 +15,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'package:my_alt_generator/main.dart';
 
@@ -26,53 +26,45 @@ const List<int> _transparent1x1Png = <int>[
   13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
-Future<void> _selectTestImage(WidgetTester tester) async {
+File _createTempSampleImage() {
   final tempDir = Directory.systemTemp.createTempSync('alt_test_');
   addTearDown(() {
     if (tempDir.existsSync()) {
       tempDir.deleteSync(recursive: true);
     }
   });
-  final imageFile = File('${tempDir.path}/sample.png')
+  return File('${tempDir.path}/sample.png')
     ..writeAsBytesSync(_transparent1x1Png);
+}
 
-  const fileSelectorChannel = MethodChannel('plugins.flutter.io/file_selector');
-  const fileSelectorMacOsChannel =
-      'dev.flutter.pigeon.file_selector_macos.FileSelectorApi.displayOpenPanel';
+List<MethodCall> _mockImagePickerChannel(File imageFile) {
   const imagePickerChannel = MethodChannel('plugins.flutter.io/image_picker');
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final calls = <MethodCall>[];
 
-  messenger.setMockMethodCallHandler(fileSelectorChannel, (call) async {
-    if (call.method == 'openFile') {
-      return <String>[imageFile.path];
-    }
-    return null;
-  });
-  messenger.setMockMessageHandler(fileSelectorMacOsChannel, (message) async {
-    return const StandardMessageCodec()
-        .encodeMessage(<Object?>[<String>[imageFile.path]]);
-  });
   messenger.setMockMethodCallHandler(imagePickerChannel, (call) async {
+    calls.add(call);
     if (call.method == 'pickImage') {
       return imageFile.path;
     }
     return null;
   });
   addTearDown(() {
-    messenger.setMockMethodCallHandler(fileSelectorChannel, null);
-    messenger.setMockMessageHandler(fileSelectorMacOsChannel, null);
     messenger.setMockMethodCallHandler(imagePickerChannel, null);
   });
+
+  return calls;
+}
+
+Future<void> _selectTestImage(WidgetTester tester) async {
+  final imageFile = _createTempSampleImage();
+  _mockImagePickerChannel(imageFile);
 
   await tester.tap(find.text('タップして画像を選択'));
   await tester.pumpAndSettle();
 
-  if (Platform.isMacOS) {
-    await tester.tap(find.text('ファイルから選択'));
-  } else {
-    await tester.tap(find.text('ライブラリから選択'));
-  }
+  await tester.tap(find.text('ライブラリから選択'));
   await tester.pumpAndSettle();
   for (int i = 0; i < 10; i++) {
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
@@ -103,8 +95,7 @@ http.Response _geminiSuccessResponse(String text) {
 void _setMockStorage([
   Map<String, String> values = const {'gemini_api_key': 'test-key'},
 ]) {
-  SharedPreferences.setMockInitialValues(values);
-  FlutterSecureStorage.setMockInitialValues(values);
+  FlutterSecureStorage.setMockInitialValues(Map<String, String>.from(values));
 }
 
 Future<void> _pumpHomeWithSelectedImage(
@@ -120,6 +111,7 @@ Future<void> _pumpHomeWithSelectedImage(
 
 void main() {
   testWidgets('App title smoke test', (WidgetTester tester) async {
+    _setMockStorage();
     // Build our app and trigger a frame.
     await tester.pumpWidget(const AltTextGeneratorApp());
 
@@ -269,5 +261,92 @@ void main() {
     expect(requestedUris, hasLength(2));
     expect(requestedUris[1].path, endsWith('/models/gemini-4-hydrogen:generateContent'));
     expect(find.text('エラーが発生しました。'), findsOneWidget);
+  });
+
+  testWidgets('HomePage offers gallery and camera in bottom sheet and picks camera image via image_picker',
+      (WidgetTester tester) async {
+    _setMockStorage();
+    final imageFile = _createTempSampleImage();
+    final pickerCalls = _mockImagePickerChannel(imageFile);
+
+    await tester.pumpWidget(const AltTextGeneratorApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('タップして画像を選択'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ライブラリから選択'), findsOneWidget);
+    expect(find.text('カメラで撮影'), findsOneWidget);
+    expect(find.text('ファイルから選択'), findsNothing);
+
+    await tester.tap(find.text('カメラで撮影'));
+    await tester.pumpAndSettle();
+    for (int i = 0; i < 10; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+
+    expect(pickerCalls, hasLength(1));
+    expect(pickerCalls.single.method, 'pickImage');
+    expect((pickerCalls.single.arguments as Map)['source'], ImageSource.camera.index);
+    expect(find.text('Altテキストを生成'), findsOneWidget);
+  });
+
+  testWidgets('HomePage has no history button or /history route',
+      (WidgetTester tester) async {
+    _setMockStorage();
+
+    await tester.pumpWidget(const AltTextGeneratorApp());
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.history), findsNothing);
+    expect(find.byTooltip('履歴'), findsNothing);
+    final materialApp = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(materialApp.routes?.containsKey('/history'), isFalse);
+  });
+
+  testWidgets('HomePage renders chat messages as SelectableText and copies AI response to clipboard',
+      (WidgetTester tester) async {
+    String? copiedText;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copiedText = (call.arguments as Map)['text'] as String?;
+      }
+      return null;
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+    });
+
+    int callCount = 0;
+    final mockClient = MockClient((request) async {
+      callCount++;
+      if (callCount == 1) {
+        return _geminiSuccessResponse('青い空の画像');
+      }
+      return _geminiSuccessResponse('青空');
+    });
+
+    await _pumpHomeWithSelectedImage(tester, httpClient: mockClient);
+    await tester.tap(find.text('Altテキストを生成'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'もっと短くして');
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(SelectableText, '画像の代替テキストを生成中...'), findsOneWidget);
+    expect(find.widgetWithText(SelectableText, '青い空の画像'), findsOneWidget);
+    expect(find.widgetWithText(SelectableText, 'もっと短くして'), findsOneWidget);
+    expect(find.widgetWithText(SelectableText, '青空'), findsOneWidget);
+
+    await tester.tap(find.text('Copy').first);
+    await tester.pumpAndSettle();
+
+    expect(copiedText, '青い空の画像');
+    expect(find.text('Copied to clipboard'), findsOneWidget);
   });
 }

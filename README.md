@@ -1,10 +1,10 @@
 # Alt 生成くん (Alt Assistant App)
 
-Gemini AIを活用して、画像の代替テキスト（Alt Text）を瞬時に生成し、AIと対話できるクロスプラットフォームアプリです。
+Gemini AIを活用して、画像の代替テキスト（Alt Text）を瞬時に生成し、AIと対話できる Android 専用アプリです。
 
 ## 概要
 
-「Alt 生成くん」は、視覚情報を言語化する作業をAIの力で効率化します。画像をアップロードまたは撮影するだけで、アクセシビリティに配慮した詳細な説明文を生成します。
+「Alt 生成くん」は、視覚情報を言語化する作業をAIの力で効率化します。画像をライブラリから選択またはカメラで撮影するだけで、アクセシビリティに配慮した説明文を生成します。
 
 ## スクリーンショット
 
@@ -14,31 +14,33 @@ Gemini AIを活用して、画像の代替テキスト（Alt Text）を瞬時に
 
 ## ダウンロード (Android)
 
-Android版は以下のReleasesページから最新のAPKファイルをダウンロードしてインストールできます。
+Android 版は以下の Releases ページから最新の APK ファイルをダウンロードしてインストールできます（リリース APK は `arm64-v8a` 対応 Android 端末専用です）。
 
 [最新のAPKをダウンロード](https://github.com/shodoi/alt-assistant-app/releases)
 
 ## 主要機能
 
-- **AIによる代替テキスト生成**: Googleの最新AI（Gemini）が画像を解析し、自然な日本語で説明文を作成します。
+- **AIによる代替テキスト生成**: Google の Gemini AI が画像を解析し、自然な日本語で説明文を作成します。
 - **単一最新モデル対応**: 最新の `gemini-4-hydrogen` モデルを採用し、シンプルで安定した代替テキスト生成・チャット体験を提供します。
-- **AIチャット機能**: 生成されたテキストに対して、「もっと短くして」「SNSの投稿文にして」など、チャット形式で追加の指示を出せます。
-- **カメラ・ライブラリ対応**: 端末のフォトライブラリからの選択に加え、その場でのカメラ撮影にも対応。
-- **セキュアな設定**: Gemini APIキーは端末内の安全なストレージ（Keychain/EncryptedSharedPrefs）に保存されます。
+- **AIチャット機能**: 生成されたテキストに対して、「もっと短くして」「SNSの投稿文にして」など、チャット形式で追加の指示や最新応答の再生成を行えます。
+- **選択可能テキストとワンタップコピー**: チャット本文は選択可能テキスト（`SelectableText`）で表示され、部分選択・コピーと Copy ボタンの両方を利用できます。
+- **カメラ・ライブラリ対応**: Android の標準画像ピッカーとカメラ撮影に対応し、選択画像の全画面プレビューも行えます。
+- **セキュアな設定**: Gemini API キーやカスタム初期プロンプトは端末内の暗号化ストレージ（`flutter_secure_storage` / Android Keystore）に保存されます。
 
 ## 特徴
 
-- **マルチプラットフォーム**: iOSおよびAndroidの両方に対応。
-- **モダンなUI/UX**: 
-  - 直感的な画像選択（中央エリアのタップ操作）
+- **Android 専用・軽量設計**: Android（リリースビルドは `arm64-v8a` 単一 ABI）に特化し、R8 によるコード・リソース縮小と Dart デバッグシンボル分離・難読化により APK サイズを抑えています。
+- **モダンなUI/UX**:
+  - 直感的な画像選択（中央エリアのタップからボトムシートで選択）
   - 生成状況のリアルタイム表示
   - 30秒のタイムアウト管理による安定した動作
-  - システムナビゲーションバーを考慮したSafeArea設計
+  - システムナビゲーションバーを考慮した SafeArea 設計
 
 ## セットアップ
 
 ### 必要条件
 - [Flutter SDK](https://docs.flutter.dev/get-started/install)
+- Android SDK / Android 実機またはエミュレータ
 - [Gemini API Key](https://aistudio.google.com/app/apikey)
 
 ### インストール
@@ -50,42 +52,19 @@ Android版は以下のReleasesページから最新のAPKファイルをダウ�
    ```bash
    flutter pub get
    ```
-3. アプリを起動します。
+3. Android デバイスでアプリを起動します。
    ```bash
    flutter run
    ```
 
 ## 技術スタック
-- **Framework**: Flutter (Dart)
-- **AI**: Google Generative AI (Gemini API)
-- **Storage**: flutter_secure_storage
-- **UI Components**: flutter_markdown, image_picker
+- **Framework**: Flutter (Dart) — Android 専用
+- **AI**: Google Generative AI (`google_generative_ai` / Gemini API)
+- **Storage**: `flutter_secure_storage`
+- **Media**: `image_picker`
 
-## ビルドコマンドガイド
+## ビルドコマンドガイド (Android)
 
-### macOS
-- **検証 (Debug)**
-  ```bash
-  flutter run -d macos
-  ```
-- **本番 (Release)**
-  ```bash
-  flutter build macos
-  # ビルド成果物は build/macos/Build/Products/Release/my_alt_generator.app に生成されます
-  ```
-
-### iOS
-- **検証 (Debug)**
-  ```bash
-  flutter run -d ios
-  ```
-- **本番 (Release / Archive)**
-  ```bash
-  flutter build ios
-  # または Xcode から Product > Archive を実行
-  ```
-
-### Android
 - **デバイス確認**
   ```bash
   flutter devices
@@ -96,26 +75,20 @@ Android版は以下のReleasesページから最新のAPKファイルをダウ�
   - 中央 (`VSVWGMWOQKPJNZFA`): **Device ID** (一意の識別子)
 
 - **検証 (Debug)**
-  デバイス名またはDevice IDを指定して実行します。
+  デバイス名または Device ID を指定して実行します（Debug ビルドは ABI 制限を受けないためエミュレータ等でも検証できます）。
   ```bash
   flutter run -d <Device ID>
   # 例 (ID指定・推奨): flutter run -d VSVWGMWOQKPJNZFA
   # 例 (名前指定):    flutter run -d A401OP
   ```
-- **本番 (Release)**
-  ```bash
-  flutter build apk
-  # インストール: flutter install -d <Device ID>
-  ```
 
-### Windows
-- **検証 (Debug)**
+- **本番 (Release — `arm64-v8a` 専用)**
+  R8 によるコード・リソース縮小、Dart のデバッグシンボル分離、および難読化を有効にして `arm64-v8a` 専用 APK をビルドします。
   ```bash
-  flutter run -d windows
-  ```
-- **本番 (Release)**
-  ```bash
-  flutter build windows
+  flutter build apk --release --split-debug-info=build/app/outputs/symbols --obfuscate
+  # APK 出力先: build/app/outputs/flutter-apk/app-release.apk (arm64-v8a 専用)
+  # デバッグシンボル出力先: build/app/outputs/symbols (Git 管理対象外)
+  # インストール: flutter install -d <Device ID>
   ```
 
 ---
